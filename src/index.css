@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Obsidian Glass (Default) */
+    --bg-base: rgba(10, 10, 12, 0.85);
+    --bg-gradient: radial-gradient(circle at 100% 0%, rgba(91, 33, 182, 0.4) 0%, transparent 40%), radial-gradient(circle at 0% 100%, rgba(37, 99, 235, 0.4) 0%, transparent 40%), linear-gradient(135deg, rgba(15, 15, 20, 0.95), rgba(5, 5, 10, 0.95));
+    --panel-bg: rgba(255, 255, 255, 0.03);
+    --panel-border: rgba(255, 255, 255, 0.1);
+    --panel-border-glow: rgba(255, 255, 255, 0.2);
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --accent: #3b82f6;
+    --term-bg: transparent;
+    --term-fg: #e2e8f0;
+  }
+
+  .theme-neon {
+    --bg-base: rgba(5, 0, 15, 0.9);
+    --bg-gradient: radial-gradient(circle at 50% 50%, rgba(236, 72, 153, 0.2) 0%, transparent 60%), linear-gradient(180deg, #05000f, #1a0033);
+    --panel-bg: rgba(236, 72, 153, 0.05);
+    --panel-border: rgba(236, 72, 153, 0.3);
+    --panel-border-glow: rgba(236, 72, 153, 0.6);
+    --text-primary: #fbcfe8;
+    --text-secondary: #f472b6;
+    --accent: #ec4899;
+    --term-bg: transparent;
+    --term-fg: #fbcfe8;
+  }
+
+  .theme-paper {
+    --bg-base: rgba(244, 241, 234, 0.95);
+    --bg-gradient: linear-gradient(180deg, #F4F1EA, #EAE5D9);
+    --panel-bg: rgba(255, 255, 255, 0.6);
+    --panel-border: rgba(0, 0, 0, 0.1);
+    --panel-border-glow: rgba(0, 0, 0, 0.2);
+    --text-primary: #333333;
+    --text-secondary: #666666;
+    --accent: #d97706;
+    --term-bg: transparent;
+    --term-fg: #333333;
+  }
+
+  .theme-cream {
+    --bg-base: rgba(250, 250, 250, 0.9);
+    --bg-gradient: radial-gradient(circle at 100% 0%, rgba(200, 220, 255, 0.4) 0%, transparent 40%), linear-gradient(135deg, #ffffff, #f0f0f0);
+    --panel-bg: rgba(255, 255, 255, 0.7);
+    --panel-border: rgba(0, 0, 0, 0.05);
+    --panel-border-glow: rgba(0, 0, 0, 0.15);
+    --text-primary: #1f2937;
+    --text-secondary: #6b7280;
+    --accent: #6366f1;
+    --term-bg: transparent;
+    --term-fg: #1f2937;
+  }
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: transparent !important;
+  background: transparent !important;
+  overflow: hidden;
+  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Glassmorphism Panel Class */
+.glass-panel {
+  background: var(--panel-bg);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--panel-border);
+  box-shadow: 0 10px 40px -10px rgba(0,0,0,0.3);
+}
+
+.glass-glow:focus-within, .glass-glow:hover {
+  border-color: var(--panel-border-glow);
+  box-shadow: 0 0 20px -5px var(--accent);
+}
+
+/* Custom Scrollbar for xterm and entire app */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--panel-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-secondary);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Xterm Custom Overrides */
+.xterm-viewport {
+  background-color: transparent !important;
+}
+
+.xterm-screen {
+  padding: 0 !important;
+}
+
+.xterm .xterm-accessibility-tree:focus {
+  outline: none;
+}
