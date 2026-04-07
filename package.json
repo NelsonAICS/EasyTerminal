@@ -1,5 +1,7 @@
 {
   "name": "easy-terminal",
+  "description": "A modern and customizable terminal emulator with AI Agent support",
+  "author": "Nelson",
   "private": true,
   "version": "1.0.0",
   "main": "dist-electron/main.js",
@@ -8,6 +10,10 @@
     "postinstall": "npm rebuild node-pty || true",
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "pack": "npm run build && electron-builder",
+    "pack:mac": "npm run build && electron-builder --mac",
+    "pack:win": "npm run build && electron-builder --win",
+    "release": "npm run pack:mac && gh release create v$npm_package_version release/*.dmg --title \"EasyTerminal v$npm_package_version\" --generate-notes",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -53,17 +59,33 @@
   "build": {
     "appId": "com.easyterminal.app",
     "productName": "EasyTerminal",
+    "asarUnpack": [
+      "**/*.node",
+      "node_modules/node-pty/**"
+    ],
     "directories": {
       "output": "release"
     },
     "mac": {
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "target": ["dmg", "zip"],
+      "extendInfo": {
+        "LSUIElement": false
+      }
     },
     "win": {
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "target": ["nsis", "zip"]
     },
     "linux": {
-      "icon": "build/icon.png"
-    }
+      "icon": "build/icon.png",
+      "target": ["AppImage"]
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "releaseType": "release"
+      }
+    ]
   }
 }

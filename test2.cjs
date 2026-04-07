@@ -1,0 +1,1 @@
+const { app, nativeImage } = require('electron'); app.whenReady().then(() => { console.log('ICNS is empty?', nativeImage.createFromPath('/Users/nelson/Desktop/APP/EasyTerminal_en/build/icon.icns').isEmpty()); console.log('PNG is empty?', nativeImage.createFromPath('/Users/nelson/Desktop/APP/EasyTerminal_en/build/icon.png').isEmpty()); app.quit(); });

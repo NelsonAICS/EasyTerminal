@@ -1,3 +1,11 @@
+process.on('uncaughtException', (err) => {
+  console.error('UNCAUGHT EXCEPTION:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('UNHANDLED REJECTION:', err);
+});
+
 import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen, dialog, nativeImage } from 'electron'
 import { join, dirname, basename, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,6 +28,18 @@ let islandWin: BrowserWindow | null = null
 
 const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || 'bash'
 
+// Fix PATH for macOS packaged apps so terminal commands like 'claude', 'node', 'npm' work.
+if (process.platform === 'darwin' && app.isPackaged) {
+  try {
+    const userPath = execSync(`${shell} -l -c 'echo $PATH'`, { encoding: 'utf-8' }).trim()
+    if (userPath) {
+      process.env.PATH = userPath
+    }
+  } catch (e) {
+    console.error('Failed to get login shell PATH', e)
+  }
+}
+
 // Check if tmux exists
 let hasTmux = false
 try {
@@ -31,13 +51,21 @@ try {
   hasTmux = false
 }
 
+let isQuitting = false;
+
+app.on('before-quit', () => {
+  isQuitting = true;
+});
+
 const terminals: Record<string, pty.IPty> = {}
 let currentCwd = process.env.HOME || process.cwd()
 
 const getIconPath = () => {
-  return app.isPackaged 
+  const p = app.isPackaged 
     ? join(__dirname, '../dist/icon.png') 
-    : join(__dirname, '../public/icon.png')
+    : join(__dirname, '../build/icon.png')
+  console.log('Icon path:', p);
+  return p;
 }
 
 const getNativeIcon = () => {
@@ -51,7 +79,7 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     transparent: true,
     backgroundColor: '#00000000',
-    icon: getNativeIcon(),
+    ...(process.platform !== 'darwin' && { icon: getNativeIcon() }),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       nodeIntegration: true,
@@ -61,19 +89,55 @@ function createWindow() {
 
   // Intercept window close event to show confirmation dialog
   win.on('close', (e) => {
-    const choice = dialog.showMessageBoxSync(win!, {
-      type: 'question',
-      buttons: ['取消 (Cancel)', '退出 (Quit)'],
-      defaultId: 1,
-      cancelId: 0,
-      title: '确认退出',
-      message: '确定要退出 EasyTerminal 吗？',
-      detail: '退出将终止所有正在运行的终端会话。',
-      icon: getNativeIcon(),
-    });
-    
-    if (choice === 0) {
-      e.preventDefault(); // User clicked Cancel, prevent closing
+    // Prevent default closing if we haven't decided to quit yet
+    if (!isQuitting) {
+      e.preventDefault();
+      console.log('Main window is closing! (event fired)');
+
+      // Only show confirmation if we have running terminals
+      const hasRunningTerminals = Object.keys(terminals).length > 0;
+      
+      if (hasRunningTerminals) {
+        const choice = dialog.showMessageBoxSync(win!, {
+          type: 'question',
+          buttons: ['取消 (Cancel)', '退出 (Quit)'],
+          defaultId: 1,
+          cancelId: 0,
+          title: '确认退出',
+          message: '确定要退出 EasyTerminal 吗？',
+          detail: '退出将终止所有正在运行的终端会话。',
+          icon: getNativeIcon()
+        });
+        
+        if (choice === 0) {
+          return; // User clicked Cancel, stop here
+        }
+      }
+      
+      // User clicked Quit (or no terminals running), clean up PTYs
+      for (const id in terminals) {
+        try { terminals[id].kill() } catch (err) {}
+        delete terminals[id]
+      }
+      
+      // Destroy island window to prevent ghost process
+      if (islandWin && !islandWin.isDestroyed()) {
+        console.log('Destroying island window');
+        islandWin.destroy()
+        islandWin = null;
+      }
+      
+      // Set quitting flag and trigger actual app quit
+      isQuitting = true;
+      
+      // Clean up win reference early to avoid extra callbacks
+      const currentWin = win;
+      win = null;
+      if (currentWin && !currentWin.isDestroyed()) {
+        currentWin.destroy();
+      }
+      
+      app.quit();
     }
   });
 
@@ -89,9 +153,8 @@ function createWindow() {
     alwaysOnTop: true,
     resizable: false,
     movable: false,
-    skipTaskbar: true,
     show: false,
-    icon: getNativeIcon(),
+    ...(process.platform !== 'darwin' && { icon: getNativeIcon() }),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       nodeIntegration: true,
@@ -105,6 +168,18 @@ function createWindow() {
   // Enable click-through for transparent areas (macOS supports this well)
   islandWin.setIgnoreMouseEvents(true, { forward: true })
 
+  win.webContents.on('render-process-gone', (e, details) => {
+    console.error('win render-process-gone:', details);
+  });
+  
+  win.webContents.on('crashed', () => {
+    console.error('win crashed!');
+  });
+  
+  win.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+    console.error('win did-fail-load:', errorCode, errorDescription);
+  });
+
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL)
     islandWin.loadURL(process.env.VITE_DEV_SERVER_URL + '#island')
@@ -113,14 +188,19 @@ function createWindow() {
     win.loadFile(join(__dirname, '../dist/index.html'))
     islandWin.loadFile(join(__dirname, '../dist/index.html'), { hash: 'island' })
   }
+
 }
 
 app.setName('EasyTerminal')
 
 app.whenReady().then(() => {
-  // Set macOS dock icon
+  // Always ensure dock is visible
   if (process.platform === 'darwin') {
-    app.dock.setIcon(getNativeIcon())
+    app.dock.show();
+    if (!app.isPackaged) {
+      const icon = getNativeIcon();
+      app.dock.setIcon(icon);
+    }
   }
 
   createWindow()
@@ -143,6 +223,9 @@ app.whenReady().then(() => {
       // Use tmux to create or attach to a session
       command = 'tmux'
       args = ['new-session', '-A', '-s', `easy_term_${id}`]
+    } else if (os.platform() !== 'win32') {
+      // Launch as login shell so aliases and profiles (.zshrc) are loaded
+      args = ['-l']
     }
 
     const ptyProcess = pty.spawn(command, args, {
@@ -154,7 +237,9 @@ app.whenReady().then(() => {
     })
 
     ptyProcess.onData((data) => {
-      win?.webContents.send(`pty:data:${id}`, data)
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(`pty:data:${id}`, data)
+      }
     })
 
     terminals[id] = ptyProcess
@@ -276,7 +361,7 @@ app.whenReady().then(() => {
 
   // Island IPC
   ipcMain.on('island:trigger', (event, msg: string) => {
-    if (islandWin) {
+    if (islandWin && !islandWin.isDestroyed()) {
       islandWin.showInactive()
       // Note: Do not disable ignoreMouseEvents, let the transparent click-through handle it
       islandWin.webContents.send('island:show', msg)
@@ -284,14 +369,14 @@ app.whenReady().then(() => {
   })
 
   ipcMain.on('island:status', (event, msg: string) => {
-    if (islandWin) {
+    if (islandWin && !islandWin.isDestroyed()) {
       islandWin.showInactive()
       islandWin.webContents.send('island:status', msg)
     }
   })
 
   ipcMain.on('island:prompt', (event, data: { message: string, options: any[], sessionId: string }) => {
-    if (islandWin) {
+    if (islandWin && !islandWin.isDestroyed()) {
       islandWin.showInactive()
       islandWin.webContents.send('island:prompt', data)
     }
@@ -313,7 +398,7 @@ app.whenReady().then(() => {
         } else {
           terminals[sessionId].write(action)
         }
-      } else if (win) {
+      } else if (win && !win.isDestroyed()) {
         win.webContents.send(`pty:data:default_tab`, `\r\n[Agent] User clicked ${action}\r\n`)
       }
     }
@@ -395,14 +480,20 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', () => {
   win = null
-  if (process.platform !== 'darwin') app.quit()
+  islandWin = null
+  // We want to fully quit the app when all windows are closed on macOS too
+  // since this is a terminal application
+  if (!isQuitting) {
+    isQuitting = true;
+    app.quit()
+  }
 })
 
 app.on('activate', () => {
-  const allWindows = BrowserWindow.getAllWindows()
-  if (allWindows.length) {
-    allWindows[0].focus()
-  } else {
+  if (win === null) {
     createWindow()
+  } else {
+    win.show()
+    win.focus()
   }
 })

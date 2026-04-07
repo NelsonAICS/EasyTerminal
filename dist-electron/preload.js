@@ -1,13 +1,13 @@
 //#region electron/preload.ts
 window.addEventListener("DOMContentLoaded", () => {
-	const replaceText = (selector, text) => {
-		const element = document.getElementById(selector);
-		if (element) element.innerText = text;
+	let e = (e, t) => {
+		let n = document.getElementById(e);
+		n && (n.innerText = t);
 	};
-	for (const dependency of [
+	for (let t of [
 		"chrome",
 		"node",
 		"electron"
-	]) replaceText(`${dependency}-version`, process.versions[dependency]);
+	]) e(`${t}-version`, process.versions[t]);
 });
 //#endregion
