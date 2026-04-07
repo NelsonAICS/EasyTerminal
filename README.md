@@ -5,6 +5,16 @@
   <p>基于 Electron + React + TailwindCSS + xterm.js 构建的现代化 TUI (Text User Interface) 代理工具。</p>
 </div>
 
+<br />
+
+<div align="center">
+  <img src="showapp/app截图.png" alt="EasyTerminal 主界面" width="800" />
+  <p><i>▲ 现代化多会话主界面，内联编辑器与快速文件管理</i></p>
+  <br />
+  <img src="showapp/app截图-灵动岛.png" alt="EasyTerminal 灵动岛交互" width="800" />
+  <p><i>▲ 零侵入式 TUI 劫持，将终端内繁琐的方向键选择转化为全局原生“灵动岛”悬浮交互</i></p>
+</div>
+
 ---
 
 ## 🌟 核心特性 (Features)

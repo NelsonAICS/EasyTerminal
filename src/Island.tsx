@@ -89,6 +89,22 @@ export default function Island() {
     })
   }
 
+  const handleClose = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    setPrompts(prev => {
+      const newPrompts = prev.filter((_, idx) => idx !== currentPromptIndex)
+      if (newPrompts.length === 0) {
+        setIslandState('hidden')
+        if (ipcRenderer) ipcRenderer.send('island:set-ignore-mouse-events', true)
+        return []
+      }
+      
+      const newIndex = Math.max(0, currentPromptIndex - 1)
+      setCurrentPromptIndex(newIndex)
+      return newPrompts
+    })
+  }
+
   const handleSingleClick = () => {
     if (islandState === 'dot') setIslandState('collapsed')
     else if (islandState === 'collapsed') setIslandState('expanded')
@@ -164,25 +180,34 @@ export default function Island() {
                     {sessionName ? `Agent [${sessionName}]` : 'Agent Action Required'}
                   </span>
                 </div>
-                {prompts.length > 1 && (
-                  <div className="flex items-center gap-2">
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); setCurrentPromptIndex(Math.max(0, currentPromptIndex - 1)) }}
-                      disabled={currentPromptIndex === 0}
-                      className="w-6 h-6 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 transition-all text-white/70"
-                    >
-                      {'<'}
-                    </button>
-                    <span className="text-[12px] font-medium text-white/50">{currentPromptIndex + 1}/{prompts.length}</span>
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); setCurrentPromptIndex(Math.min(prompts.length - 1, currentPromptIndex + 1)) }}
-                      disabled={currentPromptIndex === prompts.length - 1}
-                      className="w-6 h-6 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 transition-all text-white/70"
-                    >
-                      {'>'}
-                    </button>
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  {prompts.length > 1 && (
+                    <div className="flex items-center gap-2 mr-2">
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); setCurrentPromptIndex(Math.max(0, currentPromptIndex - 1)) }}
+                        disabled={currentPromptIndex === 0}
+                        className="w-6 h-6 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 transition-all text-white/70"
+                      >
+                        {'<'}
+                      </button>
+                      <span className="text-[12px] font-medium text-white/50">{currentPromptIndex + 1}/{prompts.length}</span>
+                      <button 
+                        onClick={(e) => { e.stopPropagation(); setCurrentPromptIndex(Math.min(prompts.length - 1, currentPromptIndex + 1)) }}
+                        disabled={currentPromptIndex === prompts.length - 1}
+                        className="w-6 h-6 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/20 disabled:opacity-30 transition-all text-white/70"
+                      >
+                        {'>'}
+                      </button>
+                    </div>
+                  )}
+                  <button 
+                    onClick={handleClose}
+                    className="w-7 h-7 flex items-center justify-center rounded-full bg-white/5 hover:bg-red-500/20 text-white/40 hover:text-red-400 transition-all"
+                    title="Dismiss"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                  </button>
+                </div>
               </div>
               <span className="text-[15px] font-medium text-white leading-relaxed break-words whitespace-pre-wrap">{message || 'Please make a selection to continue.'}</span>
             </div>

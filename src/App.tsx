@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Send, X, Save, Sparkles, TerminalSquare, Plus, Settings2, Command, HelpCircle, Folder, File, ArrowUp } from 'lucide-react'
+import { Send, X, Save, Sparkles, TerminalSquare, Plus, Settings2, Command, HelpCircle, Folder, File, ArrowUp, Download } from 'lucide-react'
 import Editor from '@monaco-editor/react'
 import TerminalView from './TerminalView'
 
@@ -16,6 +16,7 @@ const webUtils = electron?.webUtils
 interface Session {
   id: string
   name: string
+  agentId: string
 }
 
 const DEFAULT_TOOLS = [
@@ -37,7 +38,7 @@ function App() {
   const [isEditingTools, setIsEditingTools] = useState(false)
 
   const [sessions, setSessions] = useState<Session[]>([
-    { id: 'tab_1', name: 'Main' }
+    { id: 'tab_1', name: 'Main', agentId: 'agent_1' }
   ])
   const [activeSessionId, setActiveSessionId] = useState('tab_1')
   
@@ -291,7 +292,8 @@ function App() {
   const createNewSession = () => {
     const newId = `tab_${Date.now()}`
     const newName = `Tab ${sessions.length + 1}`
-    setSessions([...sessions, { id: newId, name: newName }])
+    const newAgentId = `agent_${Date.now()}_${Math.floor(Math.random() * 1000)}`
+    setSessions([...sessions, { id: newId, name: newName, agentId: newAgentId }])
     setActiveSessionId(newId)
   }
 
@@ -497,19 +499,50 @@ function App() {
           </div>
         ) : null}
 
+        {/* Terminal Area with Header */}
+        <div className="flex-1 glass-panel rounded-3xl overflow-hidden relative shadow-2xl min-h-0 flex flex-col mb-4">
+          
+          {/* Terminal Header */}
+          <div className="h-10 bg-[var(--panel-bg)]/50 border-b border-[var(--panel-border)] flex items-center justify-between px-4 shrink-0 z-10 backdrop-blur-md">
+            <div className="flex items-center gap-2 text-[var(--text-secondary)]">
+              <TerminalSquare size={14} />
+              <span className="text-xs font-medium text-[var(--text-primary)]">
+                {sessions.find(s => s.id === activeSessionId)?.name || 'Terminal'}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('export-terminal', { detail: { format: 'md', sessionId: activeSessionId } }))}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-[var(--panel-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors text-[11px] font-bold"
+                title="Export as Markdown"
+              >
+                <Download size={12} /> MD
+              </button>
+              <button
+                onClick={() => window.dispatchEvent(new CustomEvent('export-terminal', { detail: { format: 'pdf', sessionId: activeSessionId } }))}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-[var(--panel-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors text-[11px] font-bold"
+                title="Export as PDF"
+              >
+                <Download size={12} /> PDF
+              </button>
+            </div>
+          </div>
+
           {/* Terminal Instances */}
-          <div className="flex-1 glass-panel rounded-3xl overflow-hidden relative shadow-2xl min-h-0 flex flex-col mb-4">
+          <div className="flex-1 relative">
             {sessions.map(s => (
               <TerminalView 
                 key={s.id} 
                 id={s.id} 
                 name={s.name}
+                agentId={s.agentId}
                 isActive={s.id === activeSessionId && !editorFile} 
                 fontSize={fontSize} 
                 themeName={theme}
               />
             ))}
           </div>
+        </div>
 
         {/* Bottom Input Area (No longer absolute, part of flex layout) */}
         <div className="w-full max-w-4xl mx-auto flex flex-col z-50 shrink-0 pb-2">

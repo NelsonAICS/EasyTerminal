@@ -3,6 +3,8 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { ImageAddon } from '@xterm/addon-image'
 import '@xterm/xterm/css/xterm.css'
+// import AgentVisualizer from './AgentVisualizer'
+// import type { AgentState } from './AgentVisualizer'
 
 declare global {
   interface Window {
@@ -15,6 +17,7 @@ const ipcRenderer = window.require ? window.require('electron').ipcRenderer : nu
 interface TerminalViewProps {
   id: string
   name: string
+  agentId?: string
   isActive: boolean
   fontSize: number
   themeName: string
@@ -52,12 +55,101 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
   const termInstance = useRef<Terminal | null>(null)
   const fitAddon = useRef<FitAddon | null>(null)
   const [isReady, setIsReady] = useState(false)
+  // const [agentState, setAgentState] = useState<AgentState>('idle')
+  // const agentStateRef = useRef<AgentState>('idle')
+
+  const updateAgentState = (_newState: any) => {
+    // if (agentStateRef.current !== newState) {
+    //   agentStateRef.current = newState
+    //   setAgentState(newState)
+    // }
+  }
 
   // Use a ref to keep track of the latest name to avoid stale closures in useEffect
   const nameRef = useRef(name)
   useEffect(() => {
     nameRef.current = name
   }, [name])
+
+  useEffect(() => {
+    const handleExport = (e: any) => {
+      if (e.detail?.sessionId === id) {
+        if (e.detail.format === 'md') exportToMarkdown();
+        if (e.detail.format === 'pdf') exportToPDF();
+      }
+    };
+    window.addEventListener('export-terminal', handleExport);
+    return () => window.removeEventListener('export-terminal', handleExport);
+  }, [id, name]);
+
+  const exportToMarkdown = () => {
+    if (!termInstance.current || !ipcRenderer) return
+    const buffer = termInstance.current.buffer.active
+    let text = ''
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (line) {
+        text += line.translateToString(true) + '\n'
+      }
+    }
+    text = text.replace(/\n+$/, '')
+    const markdown = `\`\`\`sh\n${text}\n\`\`\``
+    ipcRenderer.send('export:save-file', {
+      content: markdown,
+      format: 'md',
+      defaultName: `terminal-${name}-${Date.now()}.md`
+    })
+  }
+
+  const exportToPDF = () => {
+    if (!termInstance.current || !ipcRenderer) return
+    const buffer = termInstance.current.buffer.active
+    let text = ''
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (line) {
+        text += line.translateToString(true) + '\n'
+      }
+    }
+    text = text.replace(/\n+$/, '')
+    
+    // Securely escape HTML characters to prevent XSS
+    const escapeHtml = (unsafe: string) => {
+      return unsafe
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+    
+    const safeText = escapeHtml(text)
+
+    const htmlContent = `
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <style>
+            body {
+              background-color: #ffffff;
+              color: #333333;
+              font-family: "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
+              padding: 20px;
+              font-size: 12px;
+              line-height: 1.5;
+              white-space: pre-wrap;
+              word-wrap: break-word;
+            }
+          </style>
+        </head>
+        <body>${safeText}</body>
+      </html>
+    `
+    ipcRenderer.send('export:save-pdf', {
+      htmlContent,
+      defaultName: `terminal-${name}-${Date.now()}.pdf`
+    })
+  }
 
   useEffect(() => {
     if (!ipcRenderer || !xtermRef.current) return
@@ -311,6 +403,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
 
           if (promptSignature !== lastPromptHash) {
             lastPromptHash = promptSignature;
+            updateAgentState('waiting')
             ipcRenderer.send('island:prompt', { message: question, options: formattedOptions, sessionId: id, sessionName: nameRef.current })
           }
         } else {
@@ -321,8 +414,38 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
       }
     }
 
+    let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const checkIdleState = () => {
+      if (!termInstance.current) return;
+      const buffer = termInstance.current.buffer.active;
+      const lastLine = buffer.getLine(buffer.baseY + buffer.cursorY)?.translateToString(true) || '';
+      
+      // If we are currently waiting for Island, keep waiting
+      // if (agentStateRef.current === 'waiting') return;
+
+      if (lastLine.match(/[%$#>]\s*$/)) {
+        updateAgentState('idle');
+      } else {
+        updateAgentState('thinking');
+      }
+    };
+
     const handleData = (_: any, data: string) => {
       term.write(data)
+      
+      const lowerData = data.toLowerCase();
+      if (lowerData.includes('error') || lowerData.includes('exception') || lowerData.includes('failed')) {
+        updateAgentState('error');
+      } else {
+        // if (agentStateRef.current !== 'error') {
+        updateAgentState('working');
+        // }
+      }
+
+      if (idleTimeout) clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(checkIdleState, 2000);
+
       if (parseTimeout) clearTimeout(parseTimeout)
       parseTimeout = setTimeout(parseTerminalScreen, 150)
     }
@@ -389,6 +512,9 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
       style={{ opacity: isActive ? 1 : 0, pointerEvents: isActive ? 'auto' : 'none', zIndex: isActive ? 10 : 0 }}
     >
       <div ref={xtermRef} className="w-full h-full" />
+      
+      {/* Agent Visualizer (Disabled per user request) */}
+      {/* <AgentVisualizer agentId={agentId} state={agentState} /> */}
     </div>
   )
 }

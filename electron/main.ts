@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen, dialog } from 'electron'
 import { join, dirname, basename, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as os from 'node:os'
@@ -289,6 +289,45 @@ app.whenReady().then(() => {
   })
 
   // Context Menu
+  ipcMain.on('export:save-file', async (event, { content, format, defaultName }) => {
+    try {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      const { canceled, filePath } = await dialog.showSaveDialog(window!, {
+        title: `Save ${format.toUpperCase()}`,
+        defaultPath: defaultName,
+        filters: [{ name: format.toUpperCase(), extensions: [format] }]
+      });
+      if (!canceled && filePath) {
+        fs.writeFileSync(filePath, content, 'utf-8');
+      }
+    } catch (e) {
+      console.error('Failed to save file', e);
+    }
+  });
+
+  ipcMain.on('export:save-pdf', async (event, { htmlContent, defaultName }) => {
+    try {
+      const window = BrowserWindow.fromWebContents(event.sender);
+      const { canceled, filePath } = await dialog.showSaveDialog(window!, {
+        title: 'Save PDF',
+        defaultPath: defaultName,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }]
+      });
+      if (!canceled && filePath) {
+        const pdfWindow = new BrowserWindow({ show: false });
+        await pdfWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+        const pdfData = await pdfWindow.webContents.printToPDF({
+          printBackground: true,
+          margins: { marginType: 'default' }
+        });
+        fs.writeFileSync(filePath, pdfData);
+        pdfWindow.close();
+      }
+    } catch (e) {
+      console.error('Failed to save PDF', e);
+    }
+  });
+
   ipcMain.on('menu:show', (event, type: 'file' | 'general', contextData: any) => {
     const template: Electron.MenuItemConstructorOptions[] = []
 
