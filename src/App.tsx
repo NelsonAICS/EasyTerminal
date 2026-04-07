@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { Send, X, Save, Sparkles, TerminalSquare, Plus, Settings2, Command, HelpCircle, Folder, File, ArrowUp, Download } from 'lucide-react'
-import Editor from '@monaco-editor/react'
+import { Send, X, Save, Sparkles, TerminalSquare, Plus, Settings2, Command, HelpCircle, Folder, File, ArrowUp, Download, Eye, Edit3 } from 'lucide-react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import 'github-markdown-css/github-markdown.css'
 import TerminalView from './TerminalView'
 
 declare global {
@@ -50,6 +52,8 @@ function App() {
   
   const [editorFile, setEditorFile] = useState<string | null>(null)
   const [editorContent, setEditorContent] = useState<string>('')
+  const [previewMode, setPreviewMode] = useState<boolean>(false)
+  const [saveStatus, setSaveStatus] = useState<string | null>(null)
   const [previewImage, setPreviewImage] = useState<{file: string, src: string} | null>(null)
 
   const [currentDir, setCurrentDir] = useState<string>('')
@@ -270,8 +274,13 @@ function App() {
 
   const saveEditor = () => {
     if (ipcRenderer && editorFile) {
+      setSaveStatus('Saving...')
       ipcRenderer.invoke('file:write', editorFile, editorContent).then(() => {
-        setEditorFile(null)
+        setSaveStatus('Saved!')
+        setTimeout(() => setSaveStatus(null), 2000)
+      }).catch(() => {
+        setSaveStatus('Failed to save')
+        setTimeout(() => setSaveStatus(null), 3000)
       })
     }
   }
@@ -451,30 +460,60 @@ function App() {
               <div className="flex items-center gap-3 text-sm font-mono text-[var(--text-secondary)]">
                 <span className="w-2.5 h-2.5 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]"></span>
                 <span className="text-[var(--text-primary)]">{editorFile}</span>
+                {saveStatus && (
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+                    saveStatus === 'Saved!' ? 'bg-green-500/20 text-green-400' : 
+                    saveStatus === 'Saving...' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400'
+                  }`}>
+                    {saveStatus}
+                  </span>
+                )}
               </div>
               <div className="flex gap-3">
-                <button onClick={saveEditor} className="text-xs font-mono px-4 py-1.5 bg-[var(--accent)]/10 text-[var(--accent)] hover:bg-[var(--accent)]/20 rounded-full border border-[var(--accent)]/20 transition-colors flex items-center gap-1.5">
-                  <Save size={14} /> Save
-                </button>
+                {editorFile.toLowerCase().endsWith('.md') && (
+                  <button 
+                    onClick={() => setPreviewMode(!previewMode)} 
+                    className="text-xs font-mono px-4 py-1.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-full border border-blue-500/20 transition-colors flex items-center gap-1.5"
+                  >
+                    {previewMode ? <><Edit3 size={14} /> Edit</> : <><Eye size={14} /> Preview</>}
+                  </button>
+                )}
+                {!previewMode && (
+                  <button onClick={saveEditor} className="text-xs font-mono px-4 py-1.5 bg-[var(--accent)]/10 text-[var(--text-primary)] hover:bg-[var(--accent)]/20 rounded-full border border-[var(--accent)]/20 transition-colors flex items-center gap-1.5">
+                    <Save size={14} /> Save
+                  </button>
+                )}
                 <button onClick={() => { setEditorFile(null); setActiveFile(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
                   <X size={14} /> Close
                 </button>
               </div>
             </div>
-            <div className="flex-1 pt-4 pb-2">
-              <Editor
-                height="100%"
-                theme={theme === 'paper' || theme === 'cream' ? 'vs-light' : 'vs-dark'}
-                language="javascript"
-                value={editorContent}
-                onChange={(val) => setEditorContent(val || '')}
-                options={{ 
-                  minimap: { enabled: false }, 
-                  padding: { top: 16 },
-                  fontSize: fontSize,
-                  fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", monospace',
-                }}
-              />
+            <div className="flex-1 flex overflow-hidden">
+              {previewMode ? (
+                <div className="flex-1 p-8 overflow-y-auto bg-[var(--panel-bg)]/80 markdown-body" style={{ color: 'var(--text-primary)', backgroundColor: 'transparent' }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {editorContent}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <div className="flex-1 pt-4 pb-2 relative bg-[var(--panel-bg)]/50">
+                  <div className="absolute inset-0 w-full h-full overflow-hidden flex flex-col p-4" key={`${editorFile}-${previewMode}`}>
+                    <textarea
+                      value={editorContent}
+                      onChange={(e) => setEditorContent(e.target.value)}
+                      onKeyDown={(e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                          e.preventDefault()
+                          saveEditor()
+                        }
+                      }}
+                      className="w-full h-full bg-transparent text-[var(--text-primary)] font-mono text-sm resize-none outline-none no-scrollbar leading-relaxed"
+                      spellCheck="false"
+                      placeholder="Start typing..."
+                    />
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         ) : null}
@@ -740,6 +779,7 @@ function App() {
                   } else if (/\.(txt|md|js|ts|jsx|tsx|json|html|css|py|java|c|cpp|go|rs|sh|bash|zsh|yml|yaml|xml|toml|csv|ini|conf)$/i.test(file.name) || file.name.startsWith('.')) {
                     setEditorFile(file.path)
                     setActiveFile(file.path)
+                    setPreviewMode(file.name.toLowerCase().endsWith('.md'))
                     if (ipcRenderer) {
                       ipcRenderer.invoke('file:read', file.path).then((content: string) => {
                         setEditorContent(content)

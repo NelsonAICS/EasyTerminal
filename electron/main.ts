@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen, dialog, nativeImage } from 'electron'
 import { join, dirname, basename, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as os from 'node:os'
@@ -34,6 +34,16 @@ try {
 const terminals: Record<string, pty.IPty> = {}
 let currentCwd = process.env.HOME || process.cwd()
 
+const getIconPath = () => {
+  return app.isPackaged 
+    ? join(__dirname, '../dist/icon.png') 
+    : join(__dirname, '../public/icon.png')
+}
+
+const getNativeIcon = () => {
+  return nativeImage.createFromPath(getIconPath())
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1100,
@@ -41,12 +51,31 @@ function createWindow() {
     titleBarStyle: 'hiddenInset',
     transparent: true,
     backgroundColor: '#00000000',
+    icon: getNativeIcon(),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       nodeIntegration: true,
       contextIsolation: false,
     },
   })
+
+  // Intercept window close event to show confirmation dialog
+  win.on('close', (e) => {
+    const choice = dialog.showMessageBoxSync(win!, {
+      type: 'question',
+      buttons: ['取消 (Cancel)', '退出 (Quit)'],
+      defaultId: 1,
+      cancelId: 0,
+      title: '确认退出',
+      message: '确定要退出 EasyTerminal 吗？',
+      detail: '退出将终止所有正在运行的终端会话。',
+      icon: getNativeIcon(),
+    });
+    
+    if (choice === 0) {
+      e.preventDefault(); // User clicked Cancel, prevent closing
+    }
+  });
 
   islandWin = new BrowserWindow({
     width: 600,
@@ -62,6 +91,7 @@ function createWindow() {
     movable: false,
     skipTaskbar: true,
     show: false,
+    icon: getNativeIcon(),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       nodeIntegration: true,
@@ -85,7 +115,14 @@ function createWindow() {
   }
 }
 
+app.setName('EasyTerminal')
+
 app.whenReady().then(() => {
+  // Set macOS dock icon
+  if (process.platform === 'darwin') {
+    app.dock.setIcon(getNativeIcon())
+  }
+
   createWindow()
   
   // Set up PTY IPC
