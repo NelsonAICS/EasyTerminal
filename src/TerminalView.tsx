@@ -415,6 +415,9 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
     }
 
     let idleTimeout: ReturnType<typeof setTimeout> | null = null;
+    let accumulatedOutput = '';
+    let lastDispatchedCost = -1;
+    let lastDispatchedTokens = -1;
 
     const checkIdleState = () => {
       if (!termInstance.current) return;
@@ -434,6 +437,55 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
     const handleData = (_: any, data: string) => {
       term.write(data)
       
+      // Accumulate output for token/cost parsing
+      // Remove ANSI escape codes to make parsing more robust
+      const cleanData = data.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
+      accumulatedOutput += cleanData;
+      if (accumulatedOutput.length > 5000) accumulatedOutput = accumulatedOutput.slice(-5000);
+      
+      // More robust regex for Cost and Tokens matching various CLI tools (Claude Code, Cursor, Aider, etc.)
+      const costMatch = accumulatedOutput.match(/(?:Cost|Billing|Spend|Usage|Total)[\s\S]{0,30}?\$([0-9.]+)/i) || 
+                        accumulatedOutput.match(/\$([0-9.]+)\s*(?:Cost|Billing|Spend|Usage|Total)/i);
+                        
+      const tokenMatch = accumulatedOutput.match(/(?:Tokens|Usage)[\s\S]{0,30}?(?:In|Out|Total)?[\s:=-]+([0-9]+[.,]?[0-9]*[kKmM]?)/i) ||
+                         accumulatedOutput.match(/([0-9]+[.,]?[0-9]*[kKmM]?)\s*tokens?/i);
+      
+      // Temporary debug logging to see what we are actually receiving from Claude Code / MiniMax
+      // This will print to the DevTools console
+      if (data.toLowerCase().includes('cost') || data.toLowerCase().includes('token') || data.includes('$')) {
+        console.log('[EasyTerminal Analytics] Captured raw chunk:', JSON.stringify(data));
+        console.log('[EasyTerminal Analytics] Accumulated Output context:', JSON.stringify(accumulatedOutput.slice(-200)));
+      }
+      
+      let newCost = -1;
+      let newTokens = -1;
+      
+      if (costMatch) {
+        newCost = parseFloat(costMatch[1]);
+      }
+      
+      if (tokenMatch) {
+        let t = tokenMatch[1].toLowerCase().replace(/,/g, '');
+        if (t.endsWith('m')) newTokens = parseFloat(t) * 1000000;
+        else if (t.endsWith('k')) newTokens = parseFloat(t) * 1000;
+        else newTokens = parseFloat(t);
+      }
+      
+      if ((newCost !== -1 && newCost !== lastDispatchedCost) || 
+          (newTokens !== -1 && newTokens !== lastDispatchedTokens)) {
+        
+        lastDispatchedCost = newCost;
+        lastDispatchedTokens = newTokens;
+        
+        window.dispatchEvent(new CustomEvent('session-analytics', {
+          detail: {
+            sessionId: id,
+            cost: newCost !== -1 ? newCost : undefined,
+            tokens: newTokens !== -1 ? newTokens : undefined
+          }
+        }));
+      }
+
       const lowerData = data.toLowerCase();
       if (lowerData.includes('error') || lowerData.includes('exception') || lowerData.includes('failed')) {
         updateAgentState('error');

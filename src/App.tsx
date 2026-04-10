@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Send, X, Save, Sparkles, TerminalSquare, Plus, Settings2, Command, HelpCircle, Folder, File, ArrowUp, Download, Eye, Edit3 } from 'lucide-react'
+import { Send, X, Save, Sparkles, TerminalSquare, Plus, Settings2, Command, HelpCircle, Folder, File, ArrowUp, Download, Eye, Edit3, Globe, PanelRightClose, MousePointer2, ZoomIn, ZoomOut, Database } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import 'github-markdown-css/github-markdown.css'
@@ -7,7 +7,15 @@ import TerminalView from './TerminalView'
 
 declare global {
   interface Window {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     require?: any;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-namespace
+  namespace JSX {
+    interface IntrinsicElements {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      webview: any;
+    }
   }
 }
 
@@ -55,10 +63,40 @@ function App() {
   const [previewMode, setPreviewMode] = useState<boolean>(false)
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
   const [previewImage, setPreviewImage] = useState<{file: string, src: string} | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [inputUrl, setInputUrl] = useState<string>('')
+  const [isPickerActive, setIsPickerActive] = useState<boolean>(false)
+  const [webviewPreloadPath, setWebviewPreloadPath] = useState<string>('')
+  const [webviewZoom, setWebviewZoom] = useState<number>(1)
+  const [analytics, setAnalytics] = useState<{cost?: number, tokens?: number}>({cost: 0, tokens: 0})
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const webviewRef = useRef<any>(null)
+
+  useEffect(() => {
+    if (ipcRenderer) {
+      ipcRenderer.invoke('get-webview-preload-path').then((p: string) => {
+        setWebviewPreloadPath(`file://${p}`);
+      });
+    }
+  }, []);
+
+  // Handle window resizing based on preview state
+  useEffect(() => {
+    if (!ipcRenderer) return;
+    const hasPreview = editorFile || previewImage || previewUrl;
+    // 1600px when preview open, 1000px when closed. Use current height to avoid jumping.
+    ipcRenderer.send('window:resize', hasPreview ? 1600 : 1000);
+  }, [editorFile, previewImage, previewUrl]);
 
   const [currentDir, setCurrentDir] = useState<string>('')
-  const [dirFiles, setDirFiles] = useState<any[]>([])
+  const [dirFiles, setDirFiles] = useState<any[]>([]) // eslint-disable-line @typescript-eslint/no-explicit-any
   
+  const loadFiles = (dir: string) => {
+    if (ipcRenderer) {
+      ipcRenderer.invoke('fs:list', dir).then((files: {name: string, isDirectory: boolean, path: string, size?: number}[]) => setDirFiles(files))
+    }
+  }
+
   const [activeFile, setActiveFile] = useState<string | null>(null)
   
   const [showNewFileModal, setShowNewFileModal] = useState(false)
@@ -79,22 +117,100 @@ function App() {
         loadFiles(dir)
       })
     }
+   
   }, [])
 
-  // Auto resize textarea
+  // Handle Webview IPC messages for DOM Picker
+  useEffect(() => {
+    const webview = webviewRef.current;
+    if (!webview) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handleIpcMessage = (event: any) => {
+      if (event.channel === 'element-picked') {
+        const data = event.args[0];
+        setIsPickerActive(false);
+        
+        // Format the picked element into a readable context snippet
+        const contextStr = `[Picked Element Context]\nTag: <${data.tagName}>\nSelector: ${data.selector}\nText: ${data.textContent}\nOuter HTML:\n${data.outerHTML}\n`;
+        
+        // Insert into input box
+        setInput(prev => prev + (prev ? '\n\n' : '') + contextStr);
+        textareaRef.current?.focus();
+      } else if (event.channel === 'picker-status-changed') {
+        setIsPickerActive(event.args[0]);
+      }
+    };
+
+    webview.addEventListener('ipc-message', handleIpcMessage);
+    
+    // Ensure preload script is attached
+    webview.addEventListener('dom-ready', () => {
+      console.log('Webview DOM ready, isPickerActive:', isPickerActive);
+      if (isPickerActive) {
+        try {
+          webview.send('toggle-picker', true);
+        } catch (e) {
+          console.error('Failed to send toggle-picker on dom-ready', e);
+        }
+      }
+    });
+
+    return () => {
+      webview.removeEventListener('ipc-message', handleIpcMessage);
+    };
+  }, [previewUrl, isPickerActive]);
+
+  useEffect(() => {
+    if (webviewRef.current) {
+      try {
+        webviewRef.current.setZoomFactor(webviewZoom);
+      } catch {
+        // webview might not be ready
+      }
+    }
+  }, [webviewZoom]);
+
+  const toggleDomPicker = () => {
+    const webview = webviewRef.current;
+    if (webview) {
+      const newState = !isPickerActive;
+      setIsPickerActive(newState);
+      
+      console.log('Sending toggle-picker to webview:', newState);
+      
+      try {
+        webview.send('toggle-picker', newState);
+      } catch (e) {
+        console.error('Failed to send toggle-picker, webview might not be ready or preload failed', e);
+      }
+    }
+  };
   useEffect(() => {
     if (textareaRef.current) {
-      // Always keep a comfortable minimum height for the prompt box
-      textareaRef.current.style.height = '80px'
+      textareaRef.current.style.height = 'auto'
       const scrollHeight = textareaRef.current.scrollHeight
-      textareaRef.current.style.height = `${Math.max(80, Math.min(scrollHeight, 240))}px`
+      textareaRef.current.style.height = `${Math.min(scrollHeight, 250)}px`
     }
   }, [input])
 
   // Context menu listener
   useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const handleAnalytics = (e: any) => {
+      if (e.detail?.sessionId === activeSessionId) {
+        setAnalytics(prev => ({
+          ...prev,
+          cost: e.detail.cost !== undefined ? e.detail.cost : prev.cost,
+          tokens: e.detail.tokens !== undefined ? e.detail.tokens : prev.tokens
+        }))
+      }
+    }
+    window.addEventListener('session-analytics', handleAnalytics)
+    
     if (!ipcRenderer) return
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const handleMenuAction = (_event: any, action: string, contextData: any) => {
       if (action === 'copy-path') {
         navigator.clipboard.writeText(contextData.path).catch(() => {
@@ -133,15 +249,12 @@ function App() {
 
     ipcRenderer.on('menu:action', handleMenuAction)
     return () => {
-      ipcRenderer.removeListener('menu:action', handleMenuAction)
+      window.removeEventListener('session-analytics', handleAnalytics)
+      ipcRenderer?.removeListener('menu:action', handleMenuAction)
     }
   }, [currentDir, activeSessionId])
 
-  const loadFiles = (dir: string) => {
-    if (ipcRenderer) {
-      ipcRenderer.invoke('fs:list', dir).then((files: any[]) => setDirFiles(files))
-    }
-  }
+
 
   const handleCreateNewFile = () => {
     if (newFileName && newFileName.trim()) {
@@ -319,7 +432,7 @@ function App() {
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
       const file = e.dataTransfer.files[0]
-      // Use webUtils for Electron >= 31, fallback to file.path
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const path = webUtils ? webUtils.getPathForFile(file as any) : (file as any).path
       if (path) {
         setInput(prev => prev + (prev.endsWith(' ') || prev === '' ? '' : ' ') + path)
@@ -340,6 +453,7 @@ function App() {
     >
       
       {/* Title bar drag region (top edge) */}
+      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       <div className="absolute top-0 left-0 w-full h-8 z-50 pointer-events-none" style={{ WebkitAppRegion: 'drag' } as any}></div>
 
       {/* Left Sidebar (Sessions) */}
@@ -434,6 +548,23 @@ function App() {
 
         <div className="flex flex-col gap-2 mt-auto">
           <div 
+            onClick={() => {
+              if (ipcRenderer) {
+                ipcRenderer.invoke('get-context-path').then((p: string) => {
+                  setCurrentDir(p);
+                  loadFiles(p);
+                  setPreviewUrl(null);
+                  setEditorFile(null);
+                  setPreviewImage(null);
+                });
+              }
+            }}
+            className="w-10 h-10 rounded-full text-[var(--text-secondary)] flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] hover:text-blue-400 transition-all"
+            title="Context Vault"
+          >
+            <Database size={18} />
+          </div>
+          <div 
             onClick={() => setShowHelp(true)}
             className="w-10 h-10 rounded-full text-[var(--text-secondary)] flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] hover:text-[var(--text-primary)] transition-all"
             title="Help & Shortcuts"
@@ -451,93 +582,11 @@ function App() {
       </div>
 
       {/* Main Area */}
-      <div className="flex-1 flex flex-col relative overflow-hidden p-6 z-10">
+      <div className="flex-1 flex gap-4 relative overflow-hidden p-6 z-10 w-full min-w-0">
         
-        {/* Editor Overlay */}
-        {editorFile ? (
-          <div className="absolute inset-4 z-30 flex flex-col glass-panel rounded-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="h-12 flex items-center justify-between px-6 border-b border-[var(--panel-border)] bg-[var(--panel-bg)]">
-              <div className="flex items-center gap-3 text-sm font-mono text-[var(--text-secondary)]">
-                <span className="w-2.5 h-2.5 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]"></span>
-                <span className="text-[var(--text-primary)]">{editorFile}</span>
-                {saveStatus && (
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${
-                    saveStatus === 'Saved!' ? 'bg-green-500/20 text-green-400' : 
-                    saveStatus === 'Saving...' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400'
-                  }`}>
-                    {saveStatus}
-                  </span>
-                )}
-              </div>
-              <div className="flex gap-3">
-                {editorFile.toLowerCase().endsWith('.md') && (
-                  <button 
-                    onClick={() => setPreviewMode(!previewMode)} 
-                    className="text-xs font-mono px-4 py-1.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-full border border-blue-500/20 transition-colors flex items-center gap-1.5"
-                  >
-                    {previewMode ? <><Edit3 size={14} /> Edit</> : <><Eye size={14} /> Preview</>}
-                  </button>
-                )}
-                {!previewMode && (
-                  <button onClick={saveEditor} className="text-xs font-mono px-4 py-1.5 bg-[var(--accent)]/10 text-[var(--text-primary)] hover:bg-[var(--accent)]/20 rounded-full border border-[var(--accent)]/20 transition-colors flex items-center gap-1.5">
-                    <Save size={14} /> Save
-                  </button>
-                )}
-                <button onClick={() => { setEditorFile(null); setActiveFile(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
-                  <X size={14} /> Close
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 flex overflow-hidden">
-              {previewMode ? (
-                <div className="flex-1 p-8 overflow-y-auto bg-[var(--panel-bg)]/80 markdown-body" style={{ color: 'var(--text-primary)', backgroundColor: 'transparent' }}>
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {editorContent}
-                  </ReactMarkdown>
-                </div>
-              ) : (
-                <div className="flex-1 pt-4 pb-2 relative bg-[var(--panel-bg)]/50">
-                  <div className="absolute inset-0 w-full h-full overflow-hidden flex flex-col p-4" key={`${editorFile}-${previewMode}`}>
-                    <textarea
-                      value={editorContent}
-                      onChange={(e) => setEditorContent(e.target.value)}
-                      onKeyDown={(e) => {
-                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-                          e.preventDefault()
-                          saveEditor()
-                        }
-                      }}
-                      className="w-full h-full bg-transparent text-[var(--text-primary)] font-mono text-sm resize-none outline-none no-scrollbar leading-relaxed"
-                      spellCheck="false"
-                      placeholder="Start typing..."
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {/* Image Preview Overlay */}
-        {previewImage ? (
-          <div className="absolute inset-4 z-30 flex flex-col glass-panel rounded-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="h-12 flex items-center justify-between px-6 border-b border-[var(--panel-border)] bg-[var(--panel-bg)]">
-              <div className="flex items-center gap-3 text-sm font-mono text-[var(--text-secondary)]">
-                <span className="w-2.5 h-2.5 rounded-full bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.8)]"></span>
-                <span className="text-[var(--text-primary)]">{previewImage.file}</span>
-              </div>
-              <div className="flex gap-3">
-                <button onClick={() => { setPreviewImage(null); setActiveFile(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
-                  <X size={14} /> Close
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 flex items-center justify-center p-6 bg-black/20 overflow-auto">
-              <img src={previewImage.src} alt={previewImage.file} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" />
-            </div>
-          </div>
-        ) : null}
-
+        {/* Left Column: Terminal & Input */}
+        <div className="flex-1 flex flex-col relative min-w-0 transition-all duration-300">
+        
         {/* Terminal Area with Header */}
         <div className="flex-1 glass-panel rounded-3xl overflow-hidden relative shadow-2xl min-h-0 flex flex-col mb-4">
           
@@ -548,8 +597,24 @@ function App() {
               <span className="text-xs font-medium text-[var(--text-primary)]">
                 {sessions.find(s => s.id === activeSessionId)?.name || 'Terminal'}
               </span>
+              {(analytics.cost !== undefined || analytics.tokens !== undefined) && (
+                <div className="ml-4 flex items-center gap-3 text-[10px] font-mono bg-[var(--panel-border)]/50 px-2 py-0.5 rounded-full border border-[var(--panel-border)]">
+                  {analytics.tokens !== undefined && <span className="text-blue-400">{analytics.tokens.toLocaleString()} tkns</span>}
+                  {analytics.cost !== undefined && <span className="text-green-400">${analytics.cost.toFixed(4)}</span>}
+                </div>
+              )}
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setPreviewUrl('http://localhost:3000')
+                  setInputUrl('http://localhost:3000')
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-[var(--panel-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors text-[11px] font-bold"
+                title="Preview Localhost"
+              >
+                <Globe size={12} /> Web
+              </button>
               <button
                 onClick={() => window.dispatchEvent(new CustomEvent('export-terminal', { detail: { format: 'md', sessionId: activeSessionId } }))}
                 className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-[var(--panel-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors text-[11px] font-bold"
@@ -568,17 +633,25 @@ function App() {
           </div>
 
           {/* Terminal Instances */}
-          <div className="flex-1 relative">
+          <div className="flex-1 relative min-h-0">
             {sessions.map(s => (
-              <TerminalView 
+              <div 
                 key={s.id} 
-                id={s.id} 
-                name={s.name}
-                agentId={s.agentId}
-                isActive={s.id === activeSessionId && !editorFile} 
-                fontSize={fontSize} 
-                themeName={theme}
-              />
+                className="absolute inset-0"
+                style={{ 
+                  display: s.id === activeSessionId ? 'block' : 'none',
+                  visibility: s.id === activeSessionId ? 'visible' : 'hidden'
+                }}
+              >
+                <TerminalView 
+                  id={s.id} 
+                  name={s.name}
+                  agentId={s.agentId}
+                  isActive={s.id === activeSessionId} 
+                  fontSize={fontSize} 
+                  themeName={theme}
+                />
+              </div>
             ))}
           </div>
         </div>
@@ -670,13 +743,14 @@ function App() {
           )}
 
           {/* Prompt Box */}
-          <div className="relative group w-full">
+          <div className="relative group w-full shrink-0">
             <div className="absolute -inset-[1px] bg-gradient-to-r from-[var(--accent)] via-purple-500 to-[var(--accent)] rounded-2xl blur-md opacity-20 group-focus-within:opacity-50 transition duration-500 pointer-events-none"></div>
-            <div className="relative flex flex-col glass-panel rounded-2xl shadow-2xl transition-all border border-[var(--panel-border)] bg-[var(--panel-bg)]/90 focus-within:bg-[var(--panel-bg)]">
+            <div className="relative flex flex-col glass-panel rounded-2xl shadow-2xl transition-all border border-[var(--panel-border)] bg-[var(--panel-bg)]/90 focus-within:bg-[var(--panel-bg)] max-h-64">
               <textarea
                 ref={textareaRef}
-                className="w-full bg-transparent border-none outline-none text-[var(--text-primary)] text-[15px] font-mono placeholder:text-[var(--text-secondary)] resize-none overflow-y-auto p-4 leading-relaxed no-scrollbar"
-                style={{ minHeight: '80px' }}
+                rows={1}
+                className="w-full bg-transparent border-none outline-none text-[var(--text-primary)] text-[15px] font-mono placeholder:text-[var(--text-secondary)] resize-none overflow-y-auto pt-4 px-4 pb-2 leading-relaxed no-scrollbar"
+                style={{ minHeight: '56px' }}
                 placeholder="Ask Agent or type command..."
                 value={input}
                 onChange={(e) => handleInputChange(e.target.value)}
@@ -694,7 +768,11 @@ function App() {
                  <div className="flex items-center gap-2">
                    {input.length > 0 && (
                      <button 
-                       onClick={() => { setInput(''); setSuggestions([]); textareaRef.current?.focus(); }}
+                       onClick={() => { 
+                         setInput(''); 
+                         setSuggestions([]); 
+                         textareaRef.current?.focus();
+                       }}
                        className="px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--panel-border)] transition-all flex items-center gap-1.5"
                        title="Clear input"
                      >
@@ -714,10 +792,165 @@ function App() {
           </div>
         </div>
 
+
+        </div> {/* End of Left Column */}
+
+        {/* Right Column: Preview / Editor / Browser */}
+        {(editorFile || previewImage || previewUrl) && (
+          <div className="w-[55%] xl:w-[60%] shrink-0 flex flex-col glass-panel rounded-3xl overflow-hidden relative shadow-2xl min-h-0 animate-in slide-in-from-right-4 duration-300 border border-[var(--panel-border)] bg-[var(--panel-bg)]/80 backdrop-blur-xl">
+            {/* Editor Overlay */}
+        {editorFile ? (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="h-12 flex items-center justify-between px-6 border-b border-[var(--panel-border)] bg-[var(--panel-bg)]">
+              <div className="flex items-center gap-3 text-sm font-mono text-[var(--text-secondary)] min-w-0 overflow-hidden">
+                <span className="w-2.5 h-2.5 shrink-0 rounded-full bg-[var(--accent)] shadow-[0_0_10px_var(--accent)]"></span>
+                <span className="text-[var(--text-primary)] truncate" title={editorFile}>{editorFile}</span>
+                {saveStatus && (
+                  <span className={`text-[10px] shrink-0 px-2 py-0.5 rounded-full ${
+                    saveStatus === 'Saved!' ? 'bg-green-500/20 text-green-400' : 
+                    saveStatus === 'Saving...' ? 'bg-blue-500/20 text-blue-400' : 'bg-red-500/20 text-red-400'
+                  }`}>
+                    {saveStatus}
+                  </span>
+                )}
+              </div>
+              <div className="flex gap-3 shrink-0 ml-4">
+                {editorFile.toLowerCase().endsWith('.md') && (
+                  <button 
+                    onClick={() => setPreviewMode(!previewMode)} 
+                    className="text-xs font-mono px-4 py-1.5 bg-blue-500/10 text-blue-400 hover:bg-blue-500/20 rounded-full border border-blue-500/20 transition-colors flex items-center gap-1.5 shrink-0"
+                  >
+                    {previewMode ? <><Edit3 size={14} /> Edit</> : <><Eye size={14} /> Preview</>}
+                  </button>
+                )}
+                {!previewMode && (
+                  <button onClick={saveEditor} className="text-xs font-mono px-4 py-1.5 bg-[var(--accent)]/10 text-[var(--text-primary)] hover:bg-[var(--accent)]/20 rounded-full border border-[var(--accent)]/20 transition-colors flex items-center gap-1.5 shrink-0">
+                    <Save size={14} /> Save
+                  </button>
+                )}
+                <button onClick={() => { setEditorFile(null); setActiveFile(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5 shrink-0">
+                  <X size={14} /> Close
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 flex overflow-hidden">
+              {previewMode ? (
+                <div className="flex-1 p-8 overflow-y-auto bg-[var(--panel-bg)]/80 markdown-body text-sm" style={{ color: 'var(--text-primary)', backgroundColor: 'transparent' }}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {editorContent}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <div className="flex-1 pt-4 pb-2 relative bg-[var(--panel-bg)]/50">
+                  <div className="absolute inset-0 w-full h-full overflow-hidden flex flex-col p-4" key={`${editorFile}-${previewMode}`}>
+                    <textarea
+                      value={editorContent}
+                      onChange={(e) => setEditorContent(e.target.value)}
+                      onKeyDown={(e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                          e.preventDefault()
+                          saveEditor()
+                        }
+                      }}
+                      className="w-full h-full bg-transparent text-[var(--text-primary)] font-mono text-sm resize-none outline-none no-scrollbar leading-relaxed"
+                      spellCheck="false"
+                      placeholder="Start typing..."
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Image Preview Overlay */}
+        {previewImage ? (
+          <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="h-12 flex items-center justify-between px-6 border-b border-[var(--panel-border)] bg-[var(--panel-bg)]">
+              <div className="flex items-center gap-3 text-sm font-mono text-[var(--text-secondary)]">
+                <span className="w-2.5 h-2.5 rounded-full bg-purple-500 shadow-[0_0_10px_rgba(168,85,247,0.8)]"></span>
+                <span className="text-[var(--text-primary)]">{previewImage.file}</span>
+              </div>
+              <div className="flex gap-3">
+                <button onClick={() => { setPreviewImage(null); setActiveFile(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
+                  <X size={14} /> Close
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 flex items-center justify-center p-6 bg-black/20 overflow-auto">
+              <img src={previewImage.src} alt={previewImage.file} className="max-w-full max-h-full object-contain rounded-lg shadow-2xl" />
+            </div>
+          </div>
+        ) : null}
+
+        
+            {/* Browser Preview Overlay */}
+            {previewUrl ? (
+              <div className="flex-1 flex flex-col overflow-hidden">
+                <div className="h-12 flex items-center justify-between px-6 border-b border-[var(--panel-border)] bg-[var(--panel-bg)] shrink-0">
+                  <div className="flex items-center gap-3 text-sm font-mono text-[var(--text-secondary)] overflow-hidden">
+                    <Globe size={14} className="text-blue-400 shrink-0" />
+                    <span className="text-[var(--text-primary)] font-medium">Browser</span>
+                  </div>
+                  <div className="flex gap-3 shrink-0">
+                    <input 
+                      type="text" 
+                      value={inputUrl}
+                      onChange={(e) => setInputUrl(e.target.value)}
+                      className="bg-black/20 border border-[var(--panel-border)] rounded-md px-3 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-blue-500/50 w-48"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const target = e.currentTarget;
+                          let val = target.value;
+                          if (!val.startsWith('http')) val = 'http://' + val;
+                          setInputUrl(val);
+                          setPreviewUrl(val);
+                          target.blur();
+                        }
+                      }}
+                    />
+                    
+                    {/* Zoom Controls */}
+                    <div className="flex items-center gap-1.5 px-2 bg-black/10 rounded-full border border-[var(--panel-border)]">
+                      <button onClick={() => setWebviewZoom(Math.max(0.1, webviewZoom - 0.1))} className="text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+                        <ZoomOut size={12} />
+                      </button>
+                      <span className="text-[10px] font-mono text-[var(--text-primary)] w-8 text-center">{Math.round(webviewZoom * 100)}%</span>
+                      <button onClick={() => setWebviewZoom(Math.min(3, webviewZoom + 0.1))} className="text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+                        <ZoomIn size={12} />
+                      </button>
+                    </div>
+
+                    <button onClick={toggleDomPicker} className={`text-xs font-mono px-3 py-1.5 rounded-full border transition-colors flex items-center gap-1.5 ${isPickerActive ? 'bg-blue-500/20 text-blue-400 border-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]' : 'bg-transparent text-[var(--text-secondary)] border-[var(--panel-border)] hover:text-[var(--text-primary)]'}`}>
+                      <MousePointer2 size={14} className={isPickerActive ? 'animate-pulse' : ''} /> {isPickerActive ? 'Picking...' : 'Pick'}
+                    </button>
+                    <button onClick={() => setPreviewUrl(null)} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
+                      <PanelRightClose size={14} /> Close
+                    </button>
+                  </div>
+                </div>
+                <div className="flex-1 bg-white relative overflow-hidden group/webview">
+                  {isPickerActive && (
+                    <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none bg-blue-500 text-white text-xs px-4 py-1.5 rounded-full shadow-lg font-mono animate-bounce">
+                      Hover elements to inspect. Click to pick.
+                    </div>
+                  )}
+                  <webview 
+                    ref={webviewRef}
+                    src={previewUrl} 
+                    className="w-full h-full border-none outline-none"
+                    preload={webviewPreloadPath || undefined}
+                  ></webview>
+                </div>
+              </div>
+            ) : null}
+          </div>
+        )}
       </div>
 
       {/* Right Sidebar (File Explorer) */}
       <div className="w-64 shrink-0 border-l border-[var(--panel-border)] flex flex-col z-40 bg-[var(--panel-bg)] backdrop-blur-xl relative">
+        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
         <div className="absolute top-0 left-0 w-full h-8 z-50 pointer-events-none" style={{ WebkitAppRegion: 'drag' } as any}></div>
         
         {/* Header / Path */}
@@ -733,7 +966,11 @@ function App() {
             className="text-[13px] font-mono text-[var(--text-primary)] truncate flex-1 flex items-center gap-1 cursor-default" 
             title={currentDir}
           >
-            <Folder size={12} className="text-blue-400 opacity-80" />
+            {currentDir.includes('.easy_context') ? (
+              <Database size={12} className="text-blue-400 opacity-80" />
+            ) : (
+              <Folder size={12} className="text-blue-400 opacity-80" />
+            )}
             <span>{currentDir === '/' ? '/' : currentDir.split('/').pop()}</span>
           </div>
         </div>
