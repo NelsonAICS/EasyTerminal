@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { ImageAddon } from '@xterm/addon-image'
 import '@xterm/xterm/css/xterm.css'
+import { getThemePreset } from './lib/themes'
 // import AgentVisualizer from './AgentVisualizer'
 // import type { AgentState } from './AgentVisualizer'
 
@@ -21,33 +22,6 @@ interface TerminalViewProps {
   isActive: boolean
   fontSize: number
   themeName: string
-}
-
-const THEMES: Record<string, any> = {
-  obsidian: {
-    background: 'transparent',
-    foreground: '#e2e8f0',
-    cursor: '#3b82f6',
-    selectionBackground: 'rgba(255, 255, 255, 0.2)',
-  },
-  neon: {
-    background: 'transparent',
-    foreground: '#fbcfe8',
-    cursor: '#ec4899',
-    selectionBackground: 'rgba(236, 72, 153, 0.6)',
-  },
-  paper: {
-    background: 'transparent',
-    foreground: '#333333',
-    cursor: '#d97706',
-    selectionBackground: 'rgba(0, 0, 0, 0.2)',
-  },
-  cream: {
-    background: 'transparent',
-    foreground: '#1f2937',
-    cursor: '#6366f1',
-    selectionBackground: 'rgba(0, 0, 0, 0.15)',
-  }
 }
 
 export default function TerminalView({ id, name, isActive, fontSize, themeName }: TerminalViewProps) {
@@ -151,16 +125,34 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
     })
   }
 
+  const buildTerminalOptions = (themeId: string, nextFontSize: number) => {
+    const preset = getThemePreset(themeId)
+    return {
+      theme: {
+        background: 'transparent',
+        ...preset.terminal,
+      },
+      // Keep terminal geometry stable across themes.
+      fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", Menlo, Monaco, Consolas, monospace',
+      fontSize: nextFontSize,
+      fontWeight: preset.terminalOptions?.fontWeight ?? 400,
+      fontWeightBold: preset.terminalOptions?.fontWeightBold ?? 700,
+      lineHeight: 1.4,
+      letterSpacing: 0,
+      cursorStyle: preset.terminalOptions?.cursorStyle ?? 'block',
+      cursorWidth: preset.terminalOptions?.cursorWidth ?? 1,
+      cursorBlink: true,
+      allowTransparency: true,
+    } as const
+  }
+
   useEffect(() => {
     if (!ipcRenderer || !xtermRef.current) return
 
+    const terminalOptions = buildTerminalOptions(themeName, fontSize)
+
     const term = new Terminal({
-      theme: THEMES[themeName] || THEMES.obsidian,
-      fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", Menlo, Monaco, Consolas, monospace',
-      fontSize: fontSize,
-      lineHeight: 1.4,
-      cursorBlink: true,
-      allowTransparency: true,
+      ...terminalOptions,
     })
     
     const fit = new FitAddon()
@@ -517,9 +509,19 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
     }
     window.addEventListener('resize', handleResize)
 
+    // Handle direct terminal writes (e.g. image insertion via OSC 1337)
+    const handleWriteDirect = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      if (termInstance.current && typeof detail === 'string') {
+        termInstance.current.write(detail)
+      }
+    }
+    window.addEventListener(`terminal:write:${id}`, handleWriteDirect)
+
     return () => {
       ipcRenderer.removeListener(`pty:data:${id}`, handleData)
       window.removeEventListener('resize', handleResize)
+      window.removeEventListener(`terminal:write:${id}`, handleWriteDirect)
       term.dispose()
     }
   }, [id]) // Initialize once per ID
@@ -541,9 +543,18 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
   // Handle theme changes
   useEffect(() => {
     if (termInstance.current) {
-      termInstance.current.options.theme = THEMES[themeName] || THEMES.obsidian
+      const terminalOptions = buildTerminalOptions(themeName, fontSize)
+      termInstance.current.options.theme = terminalOptions.theme
+      termInstance.current.options.fontFamily = terminalOptions.fontFamily
+      termInstance.current.options.fontWeight = terminalOptions.fontWeight
+      termInstance.current.options.fontWeightBold = terminalOptions.fontWeightBold
+      termInstance.current.options.lineHeight = terminalOptions.lineHeight
+      termInstance.current.options.letterSpacing = terminalOptions.letterSpacing
+      termInstance.current.options.cursorStyle = terminalOptions.cursorStyle
+      termInstance.current.options.cursorWidth = terminalOptions.cursorWidth
+      termInstance.current.refresh(0, termInstance.current.rows - 1)
     }
-  }, [themeName])
+  }, [themeName, fontSize])
 
   // Handle font size changes with requestAnimationFrame for smooth slider
   useEffect(() => {

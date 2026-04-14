@@ -18,7 +18,7 @@ export default defineConfig({
         vite: {
           build: {
             rollupOptions: {
-              external: ['node-pty', 'os', 'child_process', 'path', 'fs']
+              external: ['node-pty', 'os', 'child_process', 'path', 'fs', 'electron', 'better-sqlite3']
             }
           }
         }

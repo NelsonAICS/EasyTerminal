@@ -1,6 +1,5 @@
 import * as fs from 'fs';
 import { join } from 'path';
-import * as os from 'os';
 
 import { app } from 'electron';
 
@@ -79,13 +78,12 @@ tags: ["terminal-session"]
 ---
 
 ## Terminal Session Output
-
-\`\`\`text
 `;
+    const initialContent = `${frontmatter}\n\`\`\`text\n`;
     
     let stream: fs.WriteStream | null = null;
     try {
-      fs.writeFileSync(filePath, frontmatter, 'utf-8');
+      fs.writeFileSync(filePath, initialContent, 'utf-8');
       stream = fs.createWriteStream(filePath, { flags: 'a', encoding: 'utf-8' });
     } catch (e) {
       console.error('[ContextManager] Failed to initialize session stream', e);
@@ -131,7 +129,7 @@ tags: ["terminal-session"]
         }
         flush();
         if (stream && !stream.destroyed) {
-          stream.write('\n\`\`\`\n\n*Session closed at ' + new Date().toLocaleString() + '*\n');
+          stream.write('\n```\n\n*Session closed at ' + new Date().toLocaleString() + '*\n');
           stream.end(() => {
             // After file is fully written and closed, run NLP tag extraction
             try {
@@ -253,6 +251,49 @@ tags: ${tagsStr}
       console.error('[ContextManager] Failed to save snippet', e);
       return null;
     }
+  }
+
+  public listArtifacts() {
+    const readArtifacts = (dirPath: string, type: 'session' | 'snippet' | 'project') => {
+      if (!fs.existsSync(dirPath)) return [];
+
+      return fs.readdirSync(dirPath, { withFileTypes: true })
+        .filter(entry => entry.isFile() && (entry.name.endsWith('.md') || entry.name.endsWith('.txt')))
+        .map(entry => {
+          const filePath = join(dirPath, entry.name);
+          const stat = fs.statSync(filePath);
+          const content = fs.readFileSync(filePath, 'utf-8');
+          const titleMatch = content.match(/title:\s*"(.+?)"/);
+          const tagsMatch = content.match(/tags:\s*\[(.*?)\]/);
+          const previewSource = content
+            .replace(/^---[\s\S]+?---/m, '')
+            .replace(/```[\s\S]*?```/g, '')
+            .replace(/^#+\s+/gm, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+          return {
+            id: filePath,
+            type,
+            name: titleMatch?.[1] || entry.name,
+            path: filePath,
+            updatedAt: stat.mtime.toISOString(),
+            size: stat.size,
+            preview: previewSource.slice(0, 220),
+            tags: tagsMatch
+              ? tagsMatch[1].split(',').map(tag => tag.trim().replace(/^"|"$/g, '')).filter(Boolean)
+              : [],
+          };
+        })
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    };
+
+    return {
+      basePath: this.basePath,
+      sessions: readArtifacts(this.sessionsPath, 'session'),
+      snippets: readArtifacts(this.snippetsPath, 'snippet'),
+      projects: readArtifacts(this.projectsPath, 'project'),
+    };
   }
 
 }

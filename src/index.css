@@ -5,55 +5,154 @@
 @layer base {
   :root {
     /* Obsidian Glass (Default) */
-    --bg-base: rgba(10, 10, 12, 0.85);
-    --bg-gradient: radial-gradient(circle at 100% 0%, rgba(91, 33, 182, 0.4) 0%, transparent 40%), radial-gradient(circle at 0% 100%, rgba(37, 99, 235, 0.4) 0%, transparent 40%), linear-gradient(135deg, rgba(15, 15, 20, 0.95), rgba(5, 5, 10, 0.95));
-    --panel-bg: rgba(255, 255, 255, 0.03);
-    --panel-border: rgba(255, 255, 255, 0.1);
-    --panel-border-glow: rgba(255, 255, 255, 0.2);
-    --text-primary: #e2e8f0;
-    --text-secondary: #94a3b8;
-    --accent: #3b82f6;
+    --bg-base: rgba(8, 12, 20, 0.92);
+    --bg-gradient: radial-gradient(circle at 12% 12%, rgba(14, 165, 233, 0.18), transparent 32%), radial-gradient(circle at 88% 8%, rgba(96, 165, 250, 0.18), transparent 30%), radial-gradient(circle at 70% 80%, rgba(56, 189, 248, 0.12), transparent 25%), linear-gradient(135deg, #050913 0%, #09101d 35%, #030712 100%);
+    --panel-bg: rgba(9, 15, 28, 0.72);
+    --panel-border: rgba(148, 163, 184, 0.14);
+    --panel-border-glow: rgba(125, 211, 252, 0.26);
+    --text-primary: #e5efff;
+    --text-secondary: #8ea0bf;
+    --accent: #60a5fa;
     --term-bg: transparent;
-    --term-fg: #e2e8f0;
+    --term-fg: #e5efff;
+    --surface-muted: rgba(148, 163, 184, 0.08);
+    --surface-strong: rgba(15, 23, 42, 0.88);
+    --shadow-color: rgba(2, 8, 23, 0.5);
   }
 
-  .theme-neon {
-    --bg-base: rgba(5, 0, 15, 0.9);
-    --bg-gradient: radial-gradient(circle at 50% 50%, rgba(236, 72, 153, 0.2) 0%, transparent 60%), linear-gradient(180deg, #05000f, #1a0033);
-    --panel-bg: rgba(236, 72, 153, 0.05);
-    --panel-border: rgba(236, 72, 153, 0.3);
-    --panel-border-glow: rgba(236, 72, 153, 0.6);
-    --text-primary: #fbcfe8;
-    --text-secondary: #f472b6;
-    --accent: #ec4899;
-    --term-bg: transparent;
-    --term-fg: #fbcfe8;
+  .theme-graphite {
+    --bg-base: rgba(12, 14, 18, 0.92);
+    --bg-gradient: radial-gradient(circle at 20% 0%, rgba(148, 163, 184, 0.12), transparent 30%), radial-gradient(circle at 85% 15%, rgba(71, 85, 105, 0.18), transparent 24%), linear-gradient(145deg, #0b0d12 0%, #121722 55%, #090b10 100%);
+    --panel-bg: rgba(20, 25, 34, 0.76);
+    --panel-border: rgba(148, 163, 184, 0.16);
+    --panel-border-glow: rgba(203, 213, 225, 0.22);
+    --text-primary: #e7edf5;
+    --text-secondary: #9da9bb;
+    --accent: #94a3b8;
+    --term-fg: #e5ecf4;
+    --surface-muted: rgba(148, 163, 184, 0.08);
+    --surface-strong: rgba(17, 24, 39, 0.9);
+    --shadow-color: rgba(0, 0, 0, 0.5);
   }
 
-  .theme-paper {
-    --bg-base: rgba(244, 241, 234, 0.95);
-    --bg-gradient: linear-gradient(180deg, #F4F1EA, #EAE5D9);
-    --panel-bg: rgba(255, 255, 255, 0.6);
-    --panel-border: rgba(0, 0, 0, 0.1);
-    --panel-border-glow: rgba(0, 0, 0, 0.2);
-    --text-primary: #333333;
-    --text-secondary: #666666;
-    --accent: #d97706;
-    --term-bg: transparent;
-    --term-fg: #333333;
+  .theme-ember {
+    --bg-base: rgba(20, 12, 8, 0.94);
+    --bg-gradient: radial-gradient(circle at 14% 14%, rgba(251, 146, 60, 0.18), transparent 30%), radial-gradient(circle at 86% 18%, rgba(245, 158, 11, 0.14), transparent 22%), linear-gradient(145deg, #120b08 0%, #1d120d 48%, #09070a 100%);
+    --panel-bg: rgba(29, 20, 13, 0.78);
+    --panel-border: rgba(251, 146, 60, 0.18);
+    --panel-border-glow: rgba(251, 191, 36, 0.3);
+    --text-primary: #fff0dd;
+    --text-secondary: #d4a574;
+    --accent: #fb923c;
+    --term-fg: #ffe7cf;
+    --surface-muted: rgba(251, 146, 60, 0.08);
+    --surface-strong: rgba(24, 15, 10, 0.92);
+    --shadow-color: rgba(17, 8, 3, 0.52);
   }
 
-  .theme-cream {
-    --bg-base: rgba(250, 250, 250, 0.9);
-    --bg-gradient: radial-gradient(circle at 100% 0%, rgba(200, 220, 255, 0.4) 0%, transparent 40%), linear-gradient(135deg, #ffffff, #f0f0f0);
-    --panel-bg: rgba(255, 255, 255, 0.7);
-    --panel-border: rgba(0, 0, 0, 0.05);
-    --panel-border-glow: rgba(0, 0, 0, 0.15);
-    --text-primary: #1f2937;
-    --text-secondary: #6b7280;
-    --accent: #6366f1;
-    --term-bg: transparent;
-    --term-fg: #1f2937;
+  .theme-aurora {
+    --bg-base: rgba(5, 14, 18, 0.94);
+    --bg-gradient: radial-gradient(circle at 18% 18%, rgba(45, 212, 191, 0.16), transparent 28%), radial-gradient(circle at 82% 12%, rgba(34, 197, 94, 0.12), transparent 24%), radial-gradient(circle at 65% 80%, rgba(45, 212, 191, 0.10), transparent 24%), linear-gradient(145deg, #041016 0%, #071920 50%, #02070c 100%);
+    --panel-bg: rgba(7, 23, 28, 0.76);
+    --panel-border: rgba(94, 234, 212, 0.16);
+    --panel-border-glow: rgba(45, 212, 191, 0.28);
+    --text-primary: #dbfff8;
+    --text-secondary: #8fd0c3;
+    --accent: #2dd4bf;
+    --term-fg: #d6fff7;
+    --surface-muted: rgba(45, 212, 191, 0.08);
+    --surface-strong: rgba(4, 17, 22, 0.9);
+    --shadow-color: rgba(1, 10, 12, 0.52);
+  }
+
+  .theme-porcelain {
+    --bg-base: rgba(247, 249, 252, 0.95);
+    --bg-gradient: radial-gradient(circle at 12% 10%, rgba(129, 140, 248, 0.18), transparent 26%), radial-gradient(circle at 88% 12%, rgba(96, 165, 250, 0.16), transparent 24%), linear-gradient(145deg, #ffffff 0%, #f6f8ff 44%, #eef2ff 100%);
+    --panel-bg: rgba(84, 98, 156, 0.80);
+    --panel-border: rgba(196, 203, 255, 0.28);
+    --panel-border-glow: rgba(224, 231, 255, 0.38);
+    --text-primary: #f8fbff;
+    --text-secondary: #c2cee3;
+    --accent: #4f46e5;
+    --term-fg: #f8fbff;
+    --surface-muted: rgba(255, 255, 255, 0.08);
+    --surface-strong: rgba(58, 70, 122, 0.92);
+    --shadow-color: rgba(99, 102, 241, 0.22);
+  }
+
+  .theme-meadow {
+    --bg-base: rgba(243, 251, 246, 0.95);
+    --bg-gradient: radial-gradient(circle at 16% 12%, rgba(74, 222, 128, 0.20), transparent 24%), radial-gradient(circle at 84% 16%, rgba(22, 163, 74, 0.16), transparent 22%), linear-gradient(145deg, #fbfffc 0%, #eefbf1 50%, #e1f5e7 100%);
+    --panel-bg: rgba(42, 106, 71, 0.82);
+    --panel-border: rgba(134, 239, 172, 0.26);
+    --panel-border-glow: rgba(187, 247, 208, 0.36);
+    --text-primary: #f5fff8;
+    --text-secondary: #bee4ca;
+    --accent: #22c55e;
+    --term-fg: #f5fff8;
+    --surface-muted: rgba(255, 255, 255, 0.08);
+    --surface-strong: rgba(30, 82, 53, 0.92);
+    --shadow-color: rgba(34, 197, 94, 0.20);
+  }
+
+  .theme-catppuccin-latte {
+    --bg-base: rgba(239, 241, 245, 0.96);
+    --bg-gradient: radial-gradient(circle at 14% 14%, rgba(30, 102, 245, 0.16), transparent 28%), radial-gradient(circle at 84% 12%, rgba(234, 118, 203, 0.14), transparent 24%), linear-gradient(145deg, #f6f7fb 0%, #eef1f8 48%, #e6e9f2 100%);
+    --panel-bg: rgba(252, 252, 253, 0.74);
+    --panel-border: rgba(140, 143, 161, 0.22);
+    --panel-border-glow: rgba(30, 102, 245, 0.28);
+    --text-primary: #4c4f69;
+    --text-secondary: #6c6f85;
+    --accent: #1e66f5;
+    --term-fg: #4c4f69;
+    --surface-muted: rgba(140, 143, 161, 0.08);
+    --surface-strong: rgba(255, 255, 255, 0.86);
+    --shadow-color: rgba(140, 143, 161, 0.18);
+  }
+
+  .theme-catppuccin-frappe {
+    --bg-base: rgba(48, 52, 70, 0.96);
+    --bg-gradient: radial-gradient(circle at 12% 12%, rgba(140, 170, 238, 0.16), transparent 28%), radial-gradient(circle at 84% 16%, rgba(244, 184, 228, 0.10), transparent 24%), linear-gradient(145deg, #232634 0%, #2f3448 52%, #1e2230 100%);
+    --panel-bg: rgba(49, 53, 74, 0.76);
+    --panel-border: rgba(131, 139, 167, 0.20);
+    --panel-border-glow: rgba(140, 170, 238, 0.30);
+    --text-primary: #c6d0f5;
+    --text-secondary: #a5adce;
+    --accent: #8caaee;
+    --term-fg: #c6d0f5;
+    --surface-muted: rgba(131, 139, 167, 0.10);
+    --surface-strong: rgba(35, 38, 52, 0.90);
+    --shadow-color: rgba(17, 17, 27, 0.42);
+  }
+
+  .theme-catppuccin-macchiato {
+    --bg-base: rgba(36, 39, 58, 0.96);
+    --bg-gradient: radial-gradient(circle at 14% 10%, rgba(138, 173, 244, 0.16), transparent 28%), radial-gradient(circle at 86% 14%, rgba(245, 189, 230, 0.11), transparent 24%), radial-gradient(circle at 68% 82%, rgba(139, 213, 202, 0.09), transparent 22%), linear-gradient(145deg, #181926 0%, #24273a 50%, #10121c 100%);
+    --panel-bg: rgba(39, 42, 63, 0.78);
+    --panel-border: rgba(110, 115, 141, 0.22);
+    --panel-border-glow: rgba(138, 173, 244, 0.32);
+    --text-primary: #cad3f5;
+    --text-secondary: #a5adcb;
+    --accent: #8aadf4;
+    --term-fg: #cad3f5;
+    --surface-muted: rgba(110, 115, 141, 0.10);
+    --surface-strong: rgba(24, 25, 38, 0.92);
+    --shadow-color: rgba(17, 17, 27, 0.46);
+  }
+
+  .theme-catppuccin-mocha {
+    --bg-base: rgba(30, 30, 46, 0.96);
+    --bg-gradient: radial-gradient(circle at 13% 12%, rgba(137, 180, 250, 0.16), transparent 28%), radial-gradient(circle at 84% 12%, rgba(245, 194, 231, 0.10), transparent 24%), radial-gradient(circle at 72% 84%, rgba(148, 226, 213, 0.10), transparent 22%), linear-gradient(145deg, #11111b 0%, #1e1e2e 52%, #0b0b12 100%);
+    --panel-bg: rgba(31, 31, 47, 0.78);
+    --panel-border: rgba(108, 112, 134, 0.22);
+    --panel-border-glow: rgba(137, 180, 250, 0.30);
+    --text-primary: #cdd6f4;
+    --text-secondary: #a6adc8;
+    --accent: #89b4fa;
+    --term-fg: #cdd6f4;
+    --surface-muted: rgba(108, 112, 134, 0.10);
+    --surface-strong: rgba(24, 24, 37, 0.92);
+    --shadow-color: rgba(17, 17, 27, 0.48);
   }
 }
 
@@ -65,7 +164,7 @@ html, body, #root {
   background-color: transparent !important;
   background: transparent !important;
   overflow: hidden;
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-family: "SF Pro Display", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 /* Glassmorphism Panel Class */
@@ -74,7 +173,7 @@ html, body, #root {
   backdrop-filter: blur(24px);
   -webkit-backdrop-filter: blur(24px);
   border: 1px solid var(--panel-border);
-  box-shadow: 0 10px 40px -10px rgba(0,0,0,0.3);
+  box-shadow: 0 20px 45px -24px var(--shadow-color);
 }
 
 .glass-glow:focus-within, .glass-glow:hover {
@@ -104,6 +203,31 @@ html, body, #root {
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
+}
+
+.scroll-panel {
+  scrollbar-width: thin;
+  scrollbar-color: var(--panel-border-glow) transparent;
+}
+
+.scroll-panel::-webkit-scrollbar {
+  width: 10px;
+}
+
+.scroll-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll-panel::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, var(--panel-border-glow), var(--panel-border));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.scroll-panel::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, var(--accent), var(--panel-border-glow));
+  background-clip: padding-box;
 }
 
 /* Xterm Custom Overrides */

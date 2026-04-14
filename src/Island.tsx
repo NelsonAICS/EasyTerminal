@@ -77,7 +77,7 @@ export default function Island() {
 
   // Handle auto-dismiss logic
   useEffect(() => {
-    let intervalId: NodeJS.Timeout;
+    let intervalId: ReturnType<typeof setInterval>;
     setCountdown(null); // Reset countdown on prompt change
 
     if (islandState === 'expanded' && prompts.length > 0) {
