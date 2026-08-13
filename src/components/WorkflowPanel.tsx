@@ -1,25 +1,31 @@
 /* eslint-disable react-hooks/set-state-in-effect, react-hooks/preserve-manual-memoization */
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   ArrowLeft,
+  BarChart3,
   Bot,
   BrainCircuit,
+  Calendar,
   CheckSquare,
-  CheckCircle2,
-  Clock3,
+  ChevronRight,
+  Clock,
   Copy,
   Database,
   FileOutput,
   FileText,
   GitBranch,
+  Layers,
   List,
   PencilLine,
   Play,
   Plus,
+  Route,
   SlidersHorizontal,
   Search,
   Sparkles,
   Trash2,
+  TrendingUp,
   Wand2,
   Wrench,
   X,
@@ -29,9 +35,14 @@ import {
   Square,
   Undo2,
   Redo2,
+  Loader2,
+  Zap,
+  Workflow as WorkflowIcon,
+  Globe,
+  Code,
 } from 'lucide-react';
 import { type Prompt, type Skill, type Workflow, type WorkflowNode, type WorkflowRun } from '../types/agent-extension';
-import { UIButton, UIInput, UIPanel, UISectionKicker, UIBadge, UITextarea, UIPageShell, UIPageHeader, UIPageBody, UICardGrid, UIListCard, UIOverlayPage } from './ui';
+import { UIButton, UIInput, UIPanel, UISectionKicker, UIBadge, UITextarea, UIPageShell, UIPageHeader, UIPageBody, UIOverlayPage } from './ui';
 
 declare global {
   interface Window {
@@ -58,6 +69,10 @@ const NODE_LIBRARY: Array<{
   { type: 'condition', label: '条件判断', category: '逻辑控制', description: '根据条件决定 true/false 分支走向。', defaultConfig: { condition: 'Boolean(input)', trueNodeId: '', falseNodeId: '' } },
   { type: 'parallel', label: '结果聚合', category: '逻辑控制', description: '聚合多个节点的输出结果。', defaultConfig: { mode: 'collect', sourceNodeIds: [] } },
   { type: 'document', label: '文档输出', category: '输出', description: '把内容写入本地 Markdown / 文本文件。', defaultConfig: { outputPath: '', contentTemplate: '{{result.llm}}' } },
+  { type: 'code', label: '代码执行', category: '逻辑控制', description: '执行 JavaScript 表达式，返回计算结果。', defaultConfig: { code: 'return input;', inputNode: '' } },
+  { type: 'context', label: '上下文检索', category: '上下文', description: '从上下文存储中检索记忆记录和快照。', defaultConfig: { query: '{{query}}', limit: 10, kind: '', sourceType: '' } },
+  { type: 'browser', label: '浏览器操作', category: '工具能力', description: '在内置浏览器中执行脚本或提取网页内容。', defaultConfig: { url: '', script: '', selector: '', action: 'extract', timeout: 30000 } },
+  { type: 'workflow', label: '嵌套工作流', category: '逻辑控制', description: '执行另一个工作流并接收其输出作为结果。', defaultConfig: { workflowId: '', variables: {} } },
 ];
 
 const START_NODE_ID = 'start';
@@ -81,6 +96,10 @@ const nodeIcon = (type: NodeKind) => {
   if (type === 'condition') return <GitBranch size={15} className="text-amber-300" />;
   if (type === 'parallel') return <Sparkles size={15} className="text-pink-300" />;
   if (type === 'document') return <FileOutput size={15} className="text-orange-300" />;
+  if (type === 'code') return <Code size={15} className="text-yellow-300" />;
+  if (type === 'context') return <Layers size={15} className="text-teal-300" />;
+  if (type === 'browser') return <Globe size={15} className="text-blue-300" />;
+  if (type === 'workflow') return <WorkflowIcon size={15} className="text-purple-300" />;
   return <Bot size={15} className="text-white/70" />;
 };
 
@@ -282,6 +301,14 @@ export function WorkflowPanel({
     lockSelection: false,
   });
   const [runInput] = useState('{"query": ""}');
+  const [isExecuting, setIsExecuting] = useState(false);
+  const [executionResult, setExecutionResult] = useState<{
+    success: boolean;
+    output: unknown;
+    logs: Array<{ nodeId: string; type: string; message: string; timestamp: string }>;
+    executionTimeMs: number;
+  } | null>(null);
+  const [showExecutionResult, setShowExecutionResult] = useState(false);
   const [linkingFrom, setLinkingFrom] = useState<{ nodeId: string; sourceHandle?: string } | null>(null);
   const [draftLink, setDraftLink] = useState<{ sourceNodeId: string; sourceHandle?: string; x: number; y: number } | null>(null);
   const [reconnectingEdge, setReconnectingEdge] = useState<{ sourceNodeId: string; sourceHandle?: string; oldTargetNodeId: string } | null>(null);
@@ -1046,10 +1073,6 @@ export function WorkflowPanel({
     ));
   }, []);
 
-  const selectAllVisibleWorkflows = useCallback(() => {
-    setSelectedWorkflowCardIds(filteredWorkflows.map(workflow => workflow.id));
-  }, [filteredWorkflows]);
-
   const clearWorkflowCardSelection = useCallback(() => {
     setSelectedWorkflowCardIds([]);
   }, []);
@@ -1278,11 +1301,28 @@ export function WorkflowPanel({
 
   const executeWorkflow = async () => {
     if (!ipcRenderer || !selectedWorkflowId || !selectedWorkflow) return;
-    const variables = parseRunVariables();
-    const persistedId = await saveWorkflow(selectedWorkflow);
-    if (!persistedId) return;
-    await ipcRenderer.invoke('workflow:execute', persistedId, variables);
-    await loadData();
+    setIsExecuting(true);
+    setExecutionResult(null);
+    setShowExecutionResult(false);
+    try {
+      const variables = parseRunVariables();
+      const persistedId = await saveWorkflow(selectedWorkflow);
+      if (!persistedId) return;
+      const result = await ipcRenderer.invoke('workflow:execute', persistedId, variables);
+      setExecutionResult(result as typeof executionResult);
+      setShowExecutionResult(true);
+      await loadData();
+    } catch (err) {
+      setExecutionResult({
+        success: false,
+        output: null,
+        logs: [],
+        executionTimeMs: 0,
+      });
+      setShowExecutionResult(true);
+    } finally {
+      setIsExecuting(false);
+    }
   };
 
   const connectNodes = useCallback((sourceNodeId: string, targetNodeId: string, sourceHandle?: string) => {
@@ -1670,321 +1710,552 @@ export function WorkflowPanel({
     addNodeAt(nodeType, point);
   };
 
+  const totalRuns = runs.length;
+  const readyWorkflowCount = workflows.filter(workflow => !temporaryWorkflowIdSet.has(workflow.id) && !workflow.tags.includes('draft')).length;
+  const selectedWorkflowRuns = selectedWorkflow
+    ? runs.filter(run => run.workflow_id === selectedWorkflow.id)
+    : [];
+  const selectedWorkflowLastRun = selectedWorkflowRuns[0] || null;
+  const selectedWorkflowNodeCount = selectedWorkflow
+    ? selectedWorkflow.nodes.filter(node => node.id !== START_NODE_ID && node.id !== END_NODE_ID).length
+    : 0;
+
   return (
     <UIPageShell>
       <UIPageHeader
-        kicker="Management Page"
-        title="工作流工作台"
-        description="中枢控制管理器运行，工作流编辑器设置流程，循环生管理器不同和任务。"
+        kicker="工作流"
+        title="工作流管理台"
+        description="管理、执行和监控你的 AI 工作流。"
         actions={
           <>
-            <UIButton onClick={createWorkflow} tone="primary" size="lg" className="min-w-[11rem] bg-blue-600 text-white hover:bg-blue-500">
+            <UIButton onClick={createWorkflow} tone="primary" size="lg" className="min-w-[11rem] bg-[var(--accent)] text-white hover:brightness-110">
               <Plus size={16} />
               新建工作流
             </UIButton>
-            <UIButton tone="ghost" size="lg" className="min-w-[7rem] border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/85">
-              <SlidersHorizontal size={16} />
-              筛选
-            </UIButton>
             {onClose && (
-              <UIButton onClick={onClose} tone="ghost" size="icon" className="h-11 w-11 rounded-2xl border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/70">
+              <UIButton onClick={onClose} tone="ghost" size="icon" className="h-11 w-11 rounded-2xl border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
                 <X size={18} />
               </UIButton>
             )}
           </>
         }
       >
-        <div className="mt-7 flex items-center gap-4">
-          <div className="relative min-w-0 flex-1">
-            <Search size={18} className="absolute left-5 top-1/2 -translate-y-1/2 text-white/35" />
+        {/* Search + Stats + Filters Row */}
+        <div className="mt-5 flex items-center gap-4">
+          {/* Stats Pills */}
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3.5 py-2">
+              <Layers size={13} className="text-[color:color-mix(in_srgb,var(--accent)_72%,white)]" />
+              <span className="text-sm font-semibold text-[var(--text-primary)]">{workflows.length}</span>
+              <span className="text-xs text-[var(--text-secondary)]">工作流</span>
+            </div>
+            <div
+              className="flex items-center gap-2 rounded-2xl border px-3.5 py-2"
+              style={{ borderColor: 'var(--ui-success-border)', background: 'var(--ui-success-bg)' }}
+            >
+              <Zap size={13} style={{ color: 'var(--ui-success-text)' }} />
+              <span className="text-sm font-semibold" style={{ color: 'var(--ui-success-text)' }}>{readyWorkflowCount}</span>
+              <span className="text-xs text-[var(--text-secondary)]">活跃</span>
+            </div>
+            <div
+              className="flex items-center gap-2 rounded-2xl border px-3.5 py-2"
+              style={{ borderColor: 'var(--ui-info-border)', background: 'var(--ui-info-bg)' }}
+            >
+              <TrendingUp size={13} style={{ color: 'var(--ui-info-text)' }} />
+              <span className="text-sm font-semibold" style={{ color: 'var(--ui-info-text)' }}>{totalRuns}</span>
+              <span className="text-xs text-[var(--text-secondary)]">次运行</span>
+            </div>
+          </div>
+
+          {/* Search Bar */}
+          <div className="relative min-w-0 flex-1 max-w-[22rem]">
+            <Search size={14} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
             <UIInput
               value={searchQuery}
               onChange={event => setSearchQuery(event.target.value)}
               placeholder="搜索工作流..."
-              className="h-16 rounded-[1.35rem] pl-14 text-[15px]"
+              className="h-9 pl-9 pr-4 text-[13px]"
             />
           </div>
-        </div>
 
-        <div className="mt-6 flex gap-3 overflow-x-auto pb-1 no-scrollbar">
-          {categories.map(category => (
-            <UIButton
-              key={category}
-              tone={categoryFilter === category ? 'primary' : 'ghost'}
-              size="md"
-              className={`shrink-0 rounded-2xl px-6 ${
-                categoryFilter === category
-                  ? 'bg-blue-600 text-white hover:bg-blue-500'
-                  : 'border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/70'
-              }`}
-              onClick={() => setCategoryFilter(category)}
-            >
-              {category === 'all' ? '全部' : category}
-            </UIButton>
-          ))}
+          {/* Category Filters */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+            {categories.map(cat => (
+              <button
+                key={cat}
+                onClick={() => setCategoryFilter(cat)}
+                className={`shrink-0 rounded-xl px-3.5 py-1.5 text-xs font-medium transition-all ${
+                  categoryFilter === cat
+                    ? 'border border-[color:color-mix(in_srgb,var(--accent)_34%,transparent)] bg-[color:color-mix(in_srgb,var(--accent)_16%,transparent)] text-[var(--accent)] shadow-[0_0_12px_color-mix(in_srgb,var(--accent)_18%,transparent)]'
+                    : 'border border-transparent bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:border-[var(--panel-border)] hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                {cat === 'all' ? '全部' : cat}
+              </button>
+            ))}
+          </div>
         </div>
       </UIPageHeader>
 
-      <UIPageBody>
-        {selectedWorkflowCardIds.length > 0 && (
-          <UIPanel className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-[1.6rem] border border-blue-400/18 bg-[linear-gradient(180deg,rgba(31,46,74,0.94),rgba(16,24,40,0.98))] px-5 py-4">
-            <div className="flex flex-wrap items-center gap-2 text-sm text-white/74">
-              <span className="rounded-full border border-blue-300/18 bg-blue-500/12 px-3 py-1 text-xs font-medium text-blue-100">
-                已选 {selectedWorkflowCardIds.length} 个工作流
-              </span>
-              <span className="text-white/40">支持批量运行、删除和清空选择</span>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <UIButton onClick={selectAllVisibleWorkflows} tone="ghost" size="sm" className="border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/72">
-                <CheckSquare size={14} />
-                全选结果
-              </UIButton>
-              <UIButton onClick={runSelectedWorkflows} tone="neutral" size="sm" className="border-emerald-400/18 bg-emerald-500/12 text-emerald-100">
-                <Play size={14} />
-                批量运行
-              </UIButton>
-              <UIButton onClick={() => void deleteWorkflowsByIds(selectedWorkflowCardIds)} tone="ghost" size="sm" className="border-red-400/14 bg-red-500/[0.06] text-red-200">
-                <Trash2 size={14} />
-                批量删除
-              </UIButton>
-              <UIButton onClick={clearWorkflowCardSelection} tone="ghost" size="sm" className="border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/68">
-                清空选择
-              </UIButton>
-            </div>
-          </UIPanel>
-        )}
+      <UIPageBody className="min-h-0 overflow-hidden">
+        <div className="relative flex h-full min-h-0">
+          {/* ── Main: Workflow Grid ── */}
+          <div className="relative flex-1 overflow-y-auto px-6 py-5">
+            {/* Bulk Action Bar */}
+            {selectedWorkflowCardIds.length > 0 && (
+              <div className="mb-4 flex flex-wrap items-center gap-3 rounded-2xl border border-blue-400/20 bg-blue-500/8 px-5 py-3 animate-in fade-in slide-in-from-top-2">
+                <UIBadge tone="info">{selectedWorkflowCardIds.length} 已选</UIBadge>
+                <UIButton
+                  onClick={runSelectedWorkflows}
+                  tone="success"
+                  size="sm"
+                  className="border"
+                  style={{ background: 'var(--ui-success-bg)', borderColor: 'var(--ui-success-border)', color: 'var(--ui-success-text)' }}
+                >
+                  <Play size={12} />批量运行
+                </UIButton>
+                <UIButton onClick={() => void deleteWorkflowsByIds(selectedWorkflowCardIds)} tone="danger" size="sm">
+                  <Trash2 size={12} />删除
+                </UIButton>
+                <UIButton onClick={clearWorkflowCardSelection} tone="ghost" size="sm">清空选择</UIButton>
+              </div>
+            )}
 
-        <UICardGrid>
-          {filteredWorkflows.map(workflow => {
-            const isActive = selectedWorkflowId === workflow.id;
-            const isBulkSelected = selectedWorkflowCardIds.includes(workflow.id);
-            const workflowRuns = runs.filter(run => run.workflow_id === workflow.id);
-            const lastRun = workflowRuns[0];
-            const isDraft = workflow.tags.includes('draft') || temporaryWorkflowIdSet.has(workflow.id);
+            {/* Workflow Card Grid */}
+            {filteredWorkflows.length > 0 ? (
+              <div className="grid gap-4 sm:grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                {filteredWorkflows.map(workflow => {
+                  const isActive = selectedWorkflowId === workflow.id;
+                  const isBulkSelected = selectedWorkflowCardIds.includes(workflow.id);
+                  const workflowRuns = runs.filter(run => run.workflow_id === workflow.id);
+                  const lastRun = workflowRuns[0];
+                  const isDraft = workflow.tags.includes('draft') || temporaryWorkflowIdSet.has(workflow.id);
+                  const nodeCount = workflow.nodes.filter(n => n.id !== START_NODE_ID && n.id !== END_NODE_ID).length;
 
-            return (
-              <UIListCard
-                key={workflow.id}
-                className={`transition-all ${
-                  isBulkSelected
-                    ? 'border-blue-300/38 bg-[linear-gradient(180deg,rgba(37,99,235,0.08),rgba(15,23,42,0.88))] shadow-[0_0_0_1px_rgba(96,165,250,0.14)]'
-                    : isActive
-                      ? 'border-blue-400/28 bg-[var(--panel-bg)]/82 shadow-[0_0_0_1px_rgba(59,130,246,0.14)]'
-                      : 'hover:bg-white/[0.04]'
-                }`}
-              >
-                <div className="flex flex-1 flex-col">
-                  <div className="flex flex-col gap-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <button
-                        onClick={event => {
-                          event.stopPropagation();
-                          toggleWorkflowCardSelection(workflow.id);
-                        }}
-                        className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl border transition-colors ${
-                          isBulkSelected
-                            ? 'border-blue-300/28 bg-blue-500/16 text-blue-100'
-                            : 'border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/46 hover:text-white/72'
-                        }`}
-                        aria-label={isBulkSelected ? '取消选择工作流' : '选择工作流'}
-                      >
-                        {isBulkSelected ? <CheckSquare size={15} /> : <Square size={15} />}
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          setSelectedWorkflowId(workflow.id);
-                          setSelectedNodeId(null);
-                          setSelectedNodeIds([]);
-                        }}
-                        className="min-w-0 flex-1 text-left"
-                      >
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          <h3 className="truncate text-[18px] font-semibold text-white">{workflow.name}</h3>
-                          <span
-                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[12px] ${
-                              isDraft
-                                ? 'border-amber-400/24 bg-amber-500/10 text-amber-200'
-                                : 'border-emerald-400/24 bg-emerald-500/10 text-emerald-200'
-                            }`}
-                          >
-                            {isDraft ? <Clock3 size={13} /> : <CheckCircle2 size={13} />}
-                            {isDraft ? '草稿' : '活跃'}
-                          </span>
-                        </div>
-                        <p className="mt-2.5 text-[13px] leading-6 text-white/48">
-                          {workflow.description || '定义 EasyTerminal AI Agent 执行流程'}
-                        </p>
-                      </button>
-
-                      <UIButton
-                        tone="ghost"
-                        size="icon"
-                        onClick={() => void deleteWorkflowsByIds([workflow.id])}
-                        className="h-9 w-9 shrink-0 rounded-2xl border-red-400/10 bg-red-500/[0.04] text-red-300 hover:bg-red-500/[0.1]"
-                      >
-                        <Trash2 size={15} />
-                      </UIButton>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[12px] text-white/40">
-                      <span className="inline-flex items-center gap-2">
-                        <Clock3 size={14} />
-                        最后运行: {lastRun ? new Date(lastRun.started_at).toLocaleDateString() : '暂无记录'}
-                      </span>
-                      <span>运行次数: {workflowRuns.length}</span>
-                    </div>
-
-                    <div className="flex flex-wrap gap-2">
-                      <UIBadge className="bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] text-white/72">{workflow.category || 'general'}</UIBadge>
-                      {workflow.tags.map(tag => (
-                        <UIBadge key={tag} className="bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] text-white/72">{tag}</UIBadge>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div className="mt-4 flex flex-wrap items-center gap-2">
-                    <UIButton
+                  return (
+                    <div
+                      key={workflow.id}
                       onClick={() => {
                         setSelectedWorkflowId(workflow.id);
                         setSelectedNodeId(null);
                         setSelectedNodeIds([]);
-                        setShowEditor(true);
                       }}
-                      tone="primary"
-                      size="sm"
-                      className="min-w-[8.75rem] bg-blue-600 text-white hover:bg-blue-500"
+                      className={`group relative flex flex-col overflow-hidden rounded-2xl border cursor-pointer transition-all duration-200 ${
+                        isActive
+                          ? 'border-[color:color-mix(in_srgb,var(--panel-border-glow)_82%,transparent)] bg-[var(--ui-card-selected-bg)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--panel-border-glow)_28%,transparent),0_10px_28px_-22px_var(--shadow-color)]'
+                          : isBulkSelected
+                            ? 'border-[color:color-mix(in_srgb,var(--panel-border-glow)_52%,transparent)] bg-[color:color-mix(in_srgb,var(--ui-card-selected-bg)_64%,var(--panel-bg))]'
+                            : 'border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--panel-bg)_92%,transparent)] hover:border-[var(--panel-border-glow)] hover:bg-[var(--panel-bg)] hover:shadow-[0_8px_24px_-20px_var(--shadow-color)]'
+                      }`}
                     >
-                      <PencilLine size={14} />
-                      编辑工作流
-                    </UIButton>
-                    <UIButton
-                      onClick={() => void runWorkflowById(workflow.id)}
-                      tone="neutral"
-                      size="sm"
-                      className="min-w-[6.5rem] border-[var(--panel-border)] bg-[var(--surface-muted)]"
-                    >
-                      <Play size={14} />
-                      运行
-                    </UIButton>
-                    <UIButton
-                      onClick={() => duplicateWorkflow(workflow)}
-                      tone="ghost"
-                      size="sm"
-                      className="min-w-[6.5rem] border-[var(--panel-border)] bg-[var(--surface-muted)]"
-                    >
-                      <Copy size={14} />
-                      复制
-                    </UIButton>
-                  </div>
+                      {/* Accent Bar */}
+                      <div className={`h-1 w-full ${isDraft ? 'bg-gradient-to-r from-amber-400/60 to-amber-500/30' : 'bg-gradient-to-r from-blue-500/50 to-violet-500/40'}`} />
 
-                  <div className="mt-4 border-t border-[var(--panel-border)]/60 pt-4">
-                    <div className="flex flex-wrap gap-2">
-                      {workflow.nodes.length > 0 ? (
-                        workflow.nodes.slice(0, 4).map(node => (
-                          <span key={node.id} className="inline-flex items-center gap-1.5 rounded-full border border-[var(--panel-border)] bg-[var(--surface-muted)] px-2.5 py-1 text-[11px] text-white/62">
-                            {nodeIcon(node.type)}
-                            <span>{node.label}</span>
-                          </span>
-                        ))
-                      ) : (
-                        <span className="text-[11px] text-white/28">还没有节点，点击“编辑工作流”开始搭建。</span>
-                      )}
+                      {/* Card Body */}
+                      <div className="flex flex-col gap-3 p-5 flex-1">
+                        {/* Header Row: Status + Name + Actions */}
+                        <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                            <div className={`mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_8px_currentColor] ${
+                              isDraft ? 'bg-amber-400 text-amber-400' : 'bg-emerald-400 text-emerald-400'
+                            }`} />
+                            <h3 className={`truncate text-[15px] font-semibold leading-tight ${
+                              isActive ? 'text-[var(--text-primary)]' : 'text-[color:color-mix(in_srgb,var(--text-primary)_86%,transparent)]'
+                            }`}>{workflow.name}</h3>
+                          </div>
+                          {/* Action Buttons */}
+                          <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <UIButton
+                              onClick={event => { event.stopPropagation(); setSelectedWorkflowId(workflow.id); setShowEditor(true); }}
+                              tone="ghost" size="sm"
+                              className="h-7 px-2 text-xs border border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-strong)]"
+                            >
+                              <PencilLine size={10} />
+                            </UIButton>
+                            <UIButton
+                              onClick={event => { event.stopPropagation(); void runWorkflowById(workflow.id); }}
+                              tone="success"
+                              size="sm"
+                              className="h-7 px-2 text-xs border"
+                              style={{ background: 'var(--ui-success-strong-bg)', borderColor: 'var(--ui-success-strong-bg)', color: 'var(--ui-success-strong-text)' }}
+                            >
+                              <Play size={10} />
+                            </UIButton>
+                            <button
+                              onClick={event => { event.stopPropagation(); toggleWorkflowCardSelection(workflow.id); }}
+                              className={`shrink-0 flex h-7 w-7 items-center justify-center rounded-lg border transition-colors ${
+                                isBulkSelected
+                                  ? 'border-blue-400/40 bg-blue-500/20 text-blue-300'
+                                  : 'border-[var(--panel-border)] text-[var(--text-secondary)] hover:border-[var(--panel-border-glow)] hover:text-[var(--text-primary)]'
+                              }`}
+                            >
+                              {isBulkSelected ? <CheckSquare size={11} /> : <Square size={11} />}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Description */}
+                        <p className="text-xs leading-5 text-[var(--text-secondary)] line-clamp-2">
+                          {workflow.description || '定义 EasyTerminal 的 Agent 执行流程。'}
+                        </p>
+
+                        {/* Node Count Bar */}
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 h-1 rounded-full bg-[var(--surface-muted)] overflow-hidden">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-violet-500/60 to-blue-500/50 transition-all"
+                              style={{ width: `${Math.min(100, nodeCount * 15)}%` }}
+                            />
+                          </div>
+                          <span className="shrink-0 text-[10px] font-medium text-[var(--text-secondary)]">{nodeCount} 节点</span>
+                        </div>
+
+                        {/* Footer: Run Stats + Tags */}
+                        <div className="flex items-center justify-between gap-2 mt-auto">
+                          <div className="flex items-center gap-2">
+                            {isDraft && (
+                              <span
+                                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium"
+                                style={{ borderColor: 'var(--ui-warning-border)', background: 'var(--ui-warning-bg)', color: 'var(--ui-warning-text)' }}
+                              >
+                                草稿
+                              </span>
+                            )}
+                            {!isDraft && lastRun && (
+                              <span
+                                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                                  lastRun.status === 'failed' ? 'border border-red-400/20 bg-red-500/10 text-red-300' : ''
+                                }`}
+                                style={
+                                  lastRun.status === 'completed'
+                                    ? { borderColor: 'var(--ui-success-border)', background: 'var(--ui-success-bg)', color: 'var(--ui-success-text)' }
+                                    : lastRun.status === 'running'
+                                      ? { borderColor: 'var(--ui-info-border)', background: 'var(--ui-info-bg)', color: 'var(--ui-info-text)' }
+                                      : undefined
+                                }
+                              >
+                                {lastRun.status === 'completed' ? '已运行' : lastRun.status === 'failed' ? '失败' : '运行中'}
+                              </span>
+                            )}
+                            <span className="inline-flex items-center gap-1 text-[10px] text-[var(--text-secondary)]">
+                              <TrendingUp size={9} />{workflowRuns.length} 次
+                            </span>
+                          </div>
+                          {workflow.category && (
+                            <span className="shrink-0 text-[10px] text-[var(--text-secondary)]">{workflow.category}</span>
+                          )}
+                        </div>
+                      </div>
                     </div>
+                  );
+                })}
+              </div>
+            ) : (
+              /* Empty State */
+              <div className="flex flex-col items-center justify-center py-24 text-center">
+                <div className="mb-6 flex h-20 w-20 items-center justify-center rounded-3xl border border-dashed border-[var(--panel-border)] bg-[var(--surface-muted)] backdrop-blur-sm">
+                  <Route size={32} className="text-[var(--text-secondary)]" />
+                </div>
+                <h3 className="text-lg font-semibold text-[var(--text-primary)]">还没有工作流</h3>
+                <p className="mt-2 max-w-xs text-sm leading-6 text-[var(--text-secondary)]">
+                  {searchQuery ? '没有匹配「' + searchQuery + '」的工作流' : '点击上方「新建工作流」开始搭建你的第一个 AI 工作流'}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* ── Right: Floating Detail Panel ── */}
+          {selectedWorkflow && (
+            <div className="w-[28rem] shrink-0 border-l border-[var(--panel-border)] bg-[var(--panel-bg)]/80 backdrop-blur-md flex flex-col overflow-hidden animate-in slide-in-from-right-4 duration-300">
+              {/* Detail Header */}
+              <div className="border-b border-[var(--panel-border)] px-5 py-4 shrink-0">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <div className={`h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_8px_currentColor] ${
+                      isSelectedWorkflowTemporary ? 'bg-amber-400 text-amber-400' : 'bg-emerald-400 text-emerald-400'
+                    }`} />
+                    <h2 className="truncate text-[15px] font-semibold text-[var(--text-primary)]">{selectedWorkflow.name}</h2>
+                    {isSelectedWorkflowDirty && (
+                      <span
+                        className="shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium"
+                        style={{ borderColor: 'var(--ui-warning-border)', background: 'var(--ui-warning-bg)', color: 'var(--ui-warning-text)' }}
+                      >
+                        未保存
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => { setSelectedWorkflowId(null); setSelectedNodeId(null); }}
+                    className="shrink-0 rounded-lg p-1.5 text-[var(--text-secondary)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)] transition-colors"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+                {selectedWorkflow.description && (
+                  <p className="mt-2 text-xs text-[var(--text-secondary)] line-clamp-2">{selectedWorkflow.description}</p>
+                )}
+                {/* Category + Tags */}
+                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[10px] font-medium"
+                    style={{ borderColor: 'var(--ui-info-border)', background: 'color-mix(in srgb, var(--ui-info-bg) 100%, var(--surface-strong))', color: 'var(--ui-info-text)' }}
+                  >
+                    <BarChart3 size={9} />{selectedWorkflow.category || 'general'}
+                  </span>
+                  {selectedWorkflow.tags.map(tag => (
+                    <span key={tag} className="inline-flex items-center rounded-full border border-[var(--panel-border)] bg-[var(--surface-muted)] px-2 py-0.5 text-[10px] text-[var(--text-secondary)]">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Action Buttons */}
+                <div className="mt-4 flex items-center gap-2">
+                  <UIButton
+                    onClick={() => setShowEditor(true)}
+                    tone="primary" size="sm"
+                    className="flex-1 bg-[var(--accent)] text-white hover:brightness-110"
+                  >
+                    <PencilLine size={12} />画布编辑
+                  </UIButton>
+                  <UIButton
+                    onClick={() => void runWorkflowById(selectedWorkflow.id)}
+                    tone="success"
+                    size="sm"
+                    className="flex-1 border hover:brightness-105"
+                    style={{ background: 'var(--ui-success-strong-bg)', borderColor: 'var(--ui-success-strong-bg)', color: 'var(--ui-success-strong-text)' }}
+                  >
+                    <Play size={12} />立即运行
+                  </UIButton>
+                  <UIButton onClick={() => duplicateWorkflow(selectedWorkflow)} tone="ghost" size="icon" className="h-8 w-8 border border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
+                    <Copy size={13} />
+                  </UIButton>
+                  <UIButton onClick={() => void deleteWorkflowsByIds([selectedWorkflow.id])} tone="ghost" size="icon" className="h-8 w-8 border border-red-400/20 bg-red-500/8 text-red-400/70 hover:text-red-300 hover:bg-red-500/15">
+                    <Trash2 size={13} />
+                  </UIButton>
+                </div>
+              </div>
+
+              {/* Detail Content: Scrollable */}
+              <div className="flex-1 overflow-y-auto p-5 space-y-5">
+                {/* Stats Row */}
+                <div className="grid grid-cols-3 gap-3">
+                  <div className="flex flex-col items-center gap-2 rounded-2xl border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-strong)_92%,var(--surface-muted))] p-3 text-center">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-500/12">
+                      <Layers size={18} className="text-violet-400/80" />
+                    </div>
+                    <div className="text-xl font-bold text-[var(--text-primary)]">{selectedWorkflowNodeCount}</div>
+                    <div className="text-[10px] text-[var(--text-secondary)]">节点</div>
+                  </div>
+                  <div className="flex flex-col items-center gap-2 rounded-2xl border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-strong)_92%,var(--surface-muted))] p-3 text-center">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: 'var(--ui-success-bg)' }}>
+                      <TrendingUp size={18} style={{ color: 'var(--ui-success-text)' }} />
+                    </div>
+                    <div className="text-xl font-bold text-[var(--text-primary)]">{selectedWorkflowRuns.length}</div>
+                    <div className="text-[10px] text-[var(--text-secondary)]">运行</div>
+                  </div>
+                  <div className="flex flex-col items-center gap-2 rounded-2xl border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-strong)_92%,var(--surface-muted))] p-3 text-center">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/12">
+                      <Calendar size={18} className="text-sky-400/80" />
+                    </div>
+                    <div className="text-[11px] font-bold text-[var(--text-primary)] leading-tight">
+                      {selectedWorkflowLastRun ? new Date(selectedWorkflowLastRun.started_at).toLocaleDateString() : '—'}
+                    </div>
+                    <div className="text-[10px] text-[var(--text-secondary)]">最近运行</div>
                   </div>
                 </div>
-              </UIListCard>
-            );
-          })}
 
-          {filteredWorkflows.length === 0 && (
-            <UIPanel className="rounded-[1.8rem] border-dashed bg-[var(--panel-bg)]/62 px-6 py-14 text-center text-sm text-white/35 md:col-span-2 2xl:col-span-3">
-              还没有工作流，先创建一个草稿吧
-            </UIPanel>
+                {/* Node Preview */}
+                <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)]/25 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <Activity size={13} className="text-[var(--text-secondary)]" />
+                      <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-secondary)]">流程节点</span>
+                    </div>
+                    <button
+                      onClick={() => setShowEditor(true)}
+                      className="text-[11px] text-[var(--accent)] hover:brightness-110 transition-colors"
+                    >
+                      在画布中编辑 →
+                    </button>
+                  </div>
+                  {selectedWorkflowNodeCount > 0 ? (
+                    <div className="flex flex-wrap gap-2">
+                      {selectedWorkflow.nodes
+                        .filter(n => n.id !== START_NODE_ID && n.id !== END_NODE_ID)
+                        .map((node, idx) => (
+                          <div key={node.id} className="group/node flex items-center gap-2 rounded-full border border-[var(--panel-border)] bg-[var(--surface-muted)]/60 px-3 py-1.5 transition-colors hover:border-[var(--panel-border-glow)]">
+                            <span className="text-[var(--text-secondary)] text-[9px] font-mono">{String(idx + 1).padStart(2, '0')}</span>
+                            {nodeIcon(node.type)}
+                            <span className="text-xs font-medium text-[var(--text-primary)]">{node.label}</span>
+                          </div>
+                        ))}
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-6 text-center">
+                      <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl border border-dashed border-[var(--panel-border)]">
+                        <Layers size={16} className="text-[var(--text-secondary)]" />
+                      </div>
+                      <p className="text-xs text-[var(--text-secondary)]">当前还没有节点</p>
+                      <p className="mt-1 text-[10px] text-[var(--text-secondary)]">点击「画布编辑」开始搭建</p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Recent Runs */}
+                <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)]/25 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <Clock size={13} className="text-[var(--text-secondary)]" />
+                    <span className="text-[11px] uppercase tracking-[0.2em] text-[var(--text-secondary)]">最近运行</span>
+                    {selectedWorkflowRuns.length > 0 && (
+                      <span className="ml-auto text-[10px] text-[var(--text-secondary)]">{selectedWorkflowRuns.length} 条</span>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    {selectedWorkflowRuns.slice(0, 5).map(run => (
+                      <div key={run.id} className="flex items-center gap-3 rounded-xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 py-2.5 transition-colors hover:bg-[var(--surface-strong)]">
+                        <div className={`mt-0.5 h-2 w-2 shrink-0 rounded-full shadow-[0_0_6px_currentColor] ${
+                          run.status === 'completed' ? 'bg-emerald-400 text-emerald-400' :
+                          run.status === 'failed' ? 'bg-red-400 text-red-400' :
+                          run.status === 'running' ? 'bg-blue-400 text-blue-400 animate-pulse' :
+                          'bg-white/30 text-white/30'
+                        }`} />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-xs font-medium ${
+                              run.status === 'completed' ? 'text-emerald-300' :
+                              run.status === 'failed' ? 'text-red-300' :
+                              run.status === 'running' ? 'text-blue-300' :
+                              'text-[var(--text-secondary)]'
+                            }`}>
+                              {run.status === 'completed' ? '成功完成' :
+                               run.status === 'failed' ? '执行失败' :
+                               run.status === 'running' ? '运行中' : run.status}
+                            </span>
+                            <span className="text-[10px] text-[var(--text-secondary)] shrink-0">
+                              {new Date(run.started_at).toLocaleString()}
+                            </span>
+                          </div>
+                          {run.error && (
+                            <div className="mt-1 truncate text-[10px] leading-4 text-red-300/70">{run.error}</div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                    {selectedWorkflowRuns.length === 0 && (
+                      <div className="flex flex-col items-center justify-center py-6 text-center">
+                        <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-xl border border-dashed border-[var(--panel-border)]">
+                          <TrendingUp size={14} className="text-[var(--text-secondary)]" />
+                        </div>
+                        <p className="text-xs text-[var(--text-secondary)]">还没有运行记录</p>
+                        <p className="mt-1 text-[10px] text-[var(--text-secondary)]">点击「立即运行」开始测试</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
-        </UICardGrid>
+        </div>
       </UIPageBody>
 
       {showEditor && selectedWorkflow && (
         <UIOverlayPage>
-          <div className="flex h-[5.4rem] shrink-0 items-center justify-between border-b border-[var(--panel-border)] bg-[var(--panel-bg)]/88 pl-6 pr-5 shadow-[inset_0_-1px_0_rgba(255,255,255,0.03)]">
-              <div className="min-w-0">
-                <div className="flex items-center gap-3">
-                  <UIButton onClick={requestCloseEditor} tone="ghost" size="icon" className="h-10 w-10 rounded-2xl border-[var(--panel-border)] bg-transparent text-white/70 hover:bg-[var(--surface-muted)]">
-                    <ArrowLeft size={18} />
-                  </UIButton>
-                  <div className="flex h-12 w-12 items-center justify-center rounded-[1.35rem] border border-violet-300/18 bg-[linear-gradient(180deg,rgba(124,58,237,0.95),rgba(96,165,250,0.72))] shadow-[0_12px_34px_rgba(91,33,182,0.28)]">
-                    <Wand2 size={17} className="text-white" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] tracking-[0.24em] text-white/34">WORKFLOW EDITOR</div>
-                    <div className="flex items-center gap-2">
-                      <h2 className="truncate text-[18px] font-semibold tracking-tight text-white">工作流编辑器</h2>
-                      {isSelectedWorkflowDirty && (
-                        <span className="inline-flex rounded-full border border-amber-300/18 bg-amber-500/12 px-2 py-0.5 text-[10px] font-medium text-amber-100">
-                          未保存
-                        </span>
-                      )}
-                    </div>
+          <div className="flex h-full flex-col overflow-hidden">
+            {/* Editor Header: toolbar row */}
+            <div className="flex h-[3.75rem] shrink-0 items-center justify-between border-b border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--panel-bg)_90%,transparent)] pl-6 pr-5 shadow-[inset_0_-1px_0_color-mix(in_srgb,var(--panel-border)_60%,transparent)]">
+              <div className="flex min-w-0 items-center gap-3">
+                <UIButton onClick={requestCloseEditor} tone="ghost" size="icon" className="h-9 w-9 shrink-0 rounded-xl border border-[var(--panel-border)] bg-transparent text-[var(--text-secondary)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]">
+                  <ArrowLeft size={16} />
+                </UIButton>
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-violet-300/18 bg-[linear-gradient(180deg,rgba(124,58,237,0.95),rgba(96,165,250,0.72))] shadow-[0_8px_20px_rgba(91,33,182,0.28)]">
+                  <Wand2 size={15} className="text-white" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[10px] tracking-[0.24em] text-[var(--text-secondary)]">WORKFLOW EDITOR</div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="truncate text-[15px] font-semibold tracking-tight text-[var(--text-primary)]">工作流编辑器</h2>
+                    {isSelectedWorkflowDirty && (
+                      <span
+                        className="inline-flex shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-medium"
+                        style={{ borderColor: 'var(--ui-warning-border)', background: 'var(--ui-warning-bg)', color: 'var(--ui-warning-text)' }}
+                      >
+                        未保存
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
-              <div className="flex items-center gap-2.5" style={noDragRegionStyle}>
-                <UIButton onClick={() => setShowLibrary(true)} tone="primary" size="md" className="min-w-[8.5rem] bg-blue-600 text-white hover:bg-blue-500">
-                  <Plus size={13} />
+              <div className="flex items-center gap-2 shrink-0" style={noDragRegionStyle}>
+                <UIButton onClick={() => setShowLibrary(true)} tone="primary" size="sm" className="min-w-[6rem] bg-blue-600 text-white hover:bg-blue-500">
+                  <Plus size={12} />
                   添加节点
                 </UIButton>
                 <UIButton
                   onClick={() => setShowNodeList(prev => !prev)}
                   tone={showNodeList ? 'primary' : 'ghost'}
-                  size="md"
-                  className={showNodeList ? 'min-w-[7rem] border-blue-400/20 bg-blue-500/14 text-white' : 'min-w-[7rem] border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/74'}
+                  size="sm"
+                  className={showNodeList ? 'min-w-[5.5rem] border-[color:color-mix(in_srgb,var(--accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--text-primary)]' : 'min-w-[5.5rem] border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)]'}
                 >
-                  <List size={14} />
-                  节点列表
+                  <List size={12} />
+                  节点
                 </UIButton>
                 <UIButton
                   onClick={() => setShowNodeConfig(prev => !prev)}
                   tone={showNodeConfig ? 'primary' : 'ghost'}
-                  size="md"
-                  className={showNodeConfig ? 'min-w-[7rem] border-blue-400/20 bg-blue-500/14 text-white' : 'min-w-[7rem] border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/74'}
+                  size="sm"
+                  className={showNodeConfig ? 'min-w-[5.5rem] border-[color:color-mix(in_srgb,var(--accent)_28%,transparent)] bg-[color:color-mix(in_srgb,var(--accent)_14%,transparent)] text-[var(--text-primary)]' : 'min-w-[5.5rem] border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)]'}
                 >
-                  <SlidersHorizontal size={14} />
-                  配置面板
+                  <SlidersHorizontal size={12} />
+                  配置
                 </UIButton>
-                <UIButton onClick={() => void saveWorkflow(selectedWorkflow)} tone="neutral" size="md" className="min-w-[5.5rem] border-[var(--panel-border)] bg-[var(--surface-muted)]">保存</UIButton>
-                <UIButton onClick={executeWorkflow} tone="success" size="md" className="min-w-[7rem] bg-emerald-600/18 text-emerald-100 border-emerald-400/22">
-                  <Play size={13} />
-                  试运行
+                <div className="mx-1 h-5 w-px bg-white/10" />
+                <UIButton onClick={() => void saveWorkflow(selectedWorkflow)} tone="neutral" size="sm" className="min-w-[4.5rem] border-[var(--panel-border)] bg-[var(--surface-muted)]">
+                  保存
                 </UIButton>
-                <UIButton onClick={requestCloseEditor} tone="ghost" size="icon" className="h-10 w-10 rounded-2xl border-[var(--panel-border)] bg-[var(--surface-muted)]">
-                  <X size={18} />
+                <UIButton
+                  onClick={executeWorkflow}
+                  tone="success"
+                  size="sm"
+                  className="min-w-[5.5rem] border"
+                  style={{ background: 'var(--ui-success-bg)', borderColor: 'var(--ui-success-border)', color: 'var(--ui-success-text)' }}
+                  disabled={isExecuting}
+                >
+                  {isExecuting ? <><Loader2 size={11} className="shrink-0 animate-spin" /> 执行</> : <><Play size={11} /> 试运行</>}
                 </UIButton>
               </div>
             </div>
 
-          <div className="shrink-0 border-b border-[var(--panel-border)] bg-[var(--panel-bg)]/66 px-6 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2 text-sm text-white/78">
-                  <span className="text-white/38">当前工作流</span>
-                  <span className="rounded-full border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3.5 py-1.5 font-medium text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-                    {selectedWorkflow.name}
-                  </span>
-                  <UIBadge className="bg-[var(--surface-muted)] text-white/72">{selectedWorkflow.category || 'general'}</UIBadge>
-                  <UIBadge className="bg-[var(--surface-muted)] text-white/72">
-                    {selectedWorkflow.nodes.filter(node => node.id !== START_NODE_ID && node.id !== END_NODE_ID).length} 个节点
+            {/* Breadcrumb bar */}
+            <div className="flex shrink-0 items-center justify-between border-b border-[var(--panel-border)] bg-[var(--panel-bg)]/50 px-6 py-2">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--text-secondary)]">
+                <span className="text-[color:color-mix(in_srgb,var(--text-secondary)_72%,transparent)]">工作流</span>
+                <ChevronRight size={12} className="text-[color:color-mix(in_srgb,var(--text-secondary)_56%,transparent)]" />
+                <span className="rounded-full border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 py-1 font-medium text-[var(--text-primary)]">
+                  {selectedWorkflow.name}
+                </span>
+                <UIBadge className="shrink-0 bg-[var(--surface-muted)] text-[var(--text-secondary)]">{selectedWorkflow.category || 'general'}</UIBadge>
+                <UIBadge className="shrink-0 bg-[var(--surface-muted)] text-[var(--text-secondary)]">
+                  {selectedWorkflow.nodes.filter(n => n.id !== START_NODE_ID && n.id !== END_NODE_ID).length} 节点
+                </UIBadge>
+                {selectedWorkflow.tags.slice(0, 2).map(tag => (
+                  <UIBadge
+                    key={tag}
+                    tone="info"
+                    className="shrink-0 border"
+                    style={{ borderColor: 'var(--ui-info-border)', background: 'var(--ui-info-bg)', color: 'var(--ui-info-text)' }}
+                  >
+                    {tag}
                   </UIBadge>
-                  {selectedWorkflow.tags.slice(0, 2).map(tag => (
-                    <UIBadge key={tag} tone="info" className="border border-sky-300/12 bg-sky-400/[0.12] text-sky-100">{tag}</UIBadge>
-                  ))}
-                </div>
-                <div className="text-xs text-white/42">
-                  编排、连接与配置在当前画布完成
-                </div>
+                ))}
+              </div>
+              <div className="text-[11px] text-[color:color-mix(in_srgb,var(--text-secondary)_72%,transparent)]">
+                拖拽添加节点 · 框选多节点 · Shift 追加选择
               </div>
             </div>
 
-          <div className="flex min-h-0 flex-1">
+            {/* Main Editor Content: fills remaining height */}
+            <div className="flex min-h-0 flex-1 overflow-hidden">
               {showNodeList && (
                 <div className="w-[15rem] shrink-0 border-r border-[var(--panel-border)] bg-[linear-gradient(180deg,rgba(15,20,32,0.95),rgba(10,15,26,0.98))] p-4">
                 <UISectionKicker className="tracking-[0.22em] text-white/30">节点</UISectionKicker>
@@ -2561,28 +2832,28 @@ export function WorkflowPanel({
               </div>
 
               {showNodeConfig && (
-                <div className="w-[20rem] shrink-0 overflow-y-auto border-l border-[var(--panel-border)] bg-[linear-gradient(180deg,rgba(14,20,32,0.95),rgba(10,14,24,0.99))] p-4">
+                <div className="w-[20rem] shrink-0 overflow-y-auto border-l border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--panel-bg)_92%,var(--bg-base)_8%)] p-4">
                 {selectedNode ? (
                   <div className="space-y-4">
                     <div>
-                      <UISectionKicker className="tracking-[0.22em] text-white/30">节点配置</UISectionKicker>
-                      <div className="mt-1 text-[1.55rem] font-semibold tracking-tight text-white">{selectedNode.label}</div>
+                      <UISectionKicker className="tracking-[0.22em] text-[var(--text-secondary)]">节点配置</UISectionKicker>
+                      <div className="mt-1 text-[1.55rem] font-semibold tracking-tight text-[var(--text-primary)]">{selectedNode.label}</div>
                     </div>
 
                     <UIPanel className="rounded-[1.45rem] border border-[var(--panel-border)] bg-[var(--panel-bg)]/84 p-4">
                       <div className="flex items-center justify-between gap-3">
                         <div>
-                          <div className="text-[12px] font-medium text-white/84">节点摘要</div>
-                          <div className="mt-1 text-[11px] text-white/42">类型、连接和当前状态</div>
+                          <div className="text-[12px] font-medium text-[var(--text-primary)]">节点摘要</div>
+                          <div className="mt-1 text-[11px] text-[var(--text-secondary)]">类型、连接和当前状态</div>
                         </div>
-                        <span className="rounded-full border border-[var(--panel-border)] bg-[var(--surface-muted)] px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-white/52">
+                        <span className="rounded-full border border-[var(--panel-border)] bg-[var(--surface-muted)] px-2.5 py-1 text-[10px] uppercase tracking-[0.16em] text-[var(--text-secondary)]">
                           {selectedNode.type}
                         </span>
                       </div>
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 py-2">
-                          <div className="text-[10px] uppercase tracking-[0.14em] text-white/30">输入</div>
-                          <div className="mt-1 text-sm font-medium text-white">
+                          <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">输入</div>
+                          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
                             {selectedNode.id === START_NODE_ID
                               ? '入口'
                               : typeof selectedNode.config.inputNode === 'string' && selectedNode.config.inputNode
@@ -2591,8 +2862,8 @@ export function WorkflowPanel({
                           </div>
                         </div>
                         <div className="rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 py-2">
-                          <div className="text-[10px] uppercase tracking-[0.14em] text-white/30">输出</div>
-                          <div className="mt-1 text-sm font-medium text-white">
+                          <div className="text-[10px] uppercase tracking-[0.14em] text-[var(--text-secondary)]">输出</div>
+                          <div className="mt-1 text-sm font-medium text-[var(--text-primary)]">
                             {selectedNode.id === END_NODE_ID
                               ? '终点'
                               : buildEdges(selectedWorkflow.nodes).filter(edge => edge.source === selectedNode.id).length || '未连线'}
@@ -2603,12 +2874,12 @@ export function WorkflowPanel({
 
                     <UIPanel className="rounded-[1.45rem] border border-[var(--panel-border)] bg-[var(--panel-bg)]/84 p-4">
                       <div className="mb-3">
-                        <div className="text-[12px] font-medium text-white/84">基础设置</div>
-                        <div className="mt-1 text-[11px] text-white/42">调整节点标题和输入来源</div>
+                        <div className="text-[12px] font-medium text-[var(--text-primary)]">基础设置</div>
+                        <div className="mt-1 text-[11px] text-[var(--text-secondary)]">调整节点标题和输入来源</div>
                       </div>
                       <div className="space-y-3">
                         <div>
-                          <label className="mb-2 block text-[11px] text-white/45">标题</label>
+                          <label className="mb-2 block text-[11px] text-[var(--text-secondary)]">标题</label>
                           <UIInput
                             value={selectedNode.label}
                             onChange={event => updateNode(selectedNode.id, { label: event.target.value })}
@@ -2617,11 +2888,11 @@ export function WorkflowPanel({
 
                         {!['start', 'parallel', 'end'].includes(selectedNode.type) && (
                           <div>
-                            <label className="mb-2 block text-[11px] text-white/45">输入来源</label>
+                            <label className="mb-2 block text-[11px] text-[var(--text-secondary)]">输入来源</label>
                             <select
                               value={String(selectedNode.config.inputNode || '')}
                               onChange={event => updateNodeConfig(selectedNode.id, { inputNode: event.target.value })}
-                              className="h-10 w-full rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 text-sm text-white outline-none focus:border-[var(--panel-border-glow)]"
+                              className="h-10 w-full rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--panel-border-glow)]"
                             >
                               <option value="">自动连接</option>
                               {upstreamCandidates.map(node => (
@@ -2636,11 +2907,11 @@ export function WorkflowPanel({
                     {selectedNode.type === 'llm' && (
                       <UIPanel className="rounded-[1.45rem] border border-[var(--panel-border)] bg-[var(--panel-bg)]/84 p-4">
                         <div className="mb-3">
-                          <div className="text-[12px] font-medium text-white/84">模型提示</div>
-                          <div className="mt-1 text-[11px] text-white/42">配置主提示词和 system 提示词</div>
+                          <div className="text-[12px] font-medium text-[var(--text-primary)]">模型提示</div>
+                          <div className="mt-1 text-[11px] text-[var(--text-secondary)]">配置主提示词和 system 提示词</div>
                         </div>
                         <div>
-                          <label className="mb-2 block text-[11px] text-white/45">Prompt</label>
+                          <label className="mb-2 block text-[11px] text-[var(--text-secondary)]">Prompt</label>
                           <UITextarea
                             value={String(selectedNode.config.prompt || '')}
                             onChange={event => updateNodeConfig(selectedNode.id, { prompt: event.target.value })}
@@ -2649,7 +2920,7 @@ export function WorkflowPanel({
                           />
                         </div>
                         <div>
-                          <label className="mb-2 block text-[11px] text-white/45">System Prompt</label>
+                          <label className="mb-2 block text-[11px] text-[var(--text-secondary)]">System Prompt</label>
                           <UITextarea
                             value={String(selectedNode.config.systemPrompt || '')}
                             onChange={event => updateNodeConfig(selectedNode.id, { systemPrompt: event.target.value })}
@@ -2849,13 +3120,17 @@ export function WorkflowPanel({
               )}
             </div>
 
+            {/* Floating modals rendered inside h-full wrapper */}
+            <div className="pointer-events-none absolute inset-0">
+              <div className="pointer-events-none h-full">
+
           {showLibrary && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/42 backdrop-blur-sm">
-                <UIPanel className="w-full max-w-[820px] bg-[var(--surface-strong)] px-6 py-5 shadow-2xl">
+            <div className="pointer-events-auto absolute inset-0 z-30 flex items-center justify-center bg-[color:color-mix(in_srgb,var(--bg-base)_58%,transparent)] backdrop-blur-md">
+                <UIPanel className="pointer-events-auto w-full max-w-[820px] border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-strong)_96%,transparent)] px-6 py-5 shadow-2xl">
                   <div className="flex items-center justify-between gap-4">
                     <div>
                       <UISectionKicker className="tracking-[0.22em]">NODE LIBRARY</UISectionKicker>
-                      <div className="mt-1 text-xl font-semibold text-white">添加节点</div>
+                      <div className="mt-1 text-xl font-semibold text-[var(--text-primary)]">添加节点</div>
                     </div>
                     <UIButton onClick={() => setShowLibrary(false)} tone="ghost" size="icon">
                       <X size={16} />
@@ -2863,7 +3138,7 @@ export function WorkflowPanel({
                   </div>
 
                   <div className="relative mt-4">
-                    <Search size={14} className="absolute left-3 top-3 text-white/35" />
+                    <Search size={14} className="absolute left-3 top-3 text-[var(--text-secondary)]" />
                     <UIInput
                       value={libraryQuery}
                       onChange={event => setLibraryQuery(event.target.value)}
@@ -2883,15 +3158,15 @@ export function WorkflowPanel({
                         }}
                         onClick={() => addNode(item.type)}
                         tone="ghost"
-                        className="h-auto justify-start rounded-[1.5rem] border border-white/10 bg-white/5 px-4 py-4 text-left hover:bg-white/10"
+                        className="h-auto justify-start rounded-[1.5rem] border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-muted)_88%,transparent)] px-4 py-4 text-left hover:border-[var(--panel-border-glow)] hover:bg-[color:color-mix(in_srgb,var(--surface-strong)_94%,transparent)]"
                       >
                         <div className="w-full">
                           <div className="flex items-center gap-2">
                             {nodeIcon(item.type)}
-                            <span className="text-base font-semibold text-white">{item.label}</span>
+                            <span className="text-base font-semibold text-[var(--text-primary)]">{item.label}</span>
                           </div>
-                          <div className="mt-2 text-[11px] text-white/35">{item.category}</div>
-                          <div className="mt-1 text-sm leading-6 text-white/55">{item.description}</div>
+                          <div className="mt-2 text-[11px] text-[var(--text-secondary)]">{item.category}</div>
+                          <div className="mt-1 text-sm leading-6 text-[var(--text-secondary)]">{item.description}</div>
                         </div>
                       </UIButton>
                     ))}
@@ -2901,25 +3176,25 @@ export function WorkflowPanel({
           )}
 
           {showDiscardPrompt && selectedWorkflow && (
-            <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/52 px-6 backdrop-blur-sm">
-              <UIPanel className="w-full max-w-[30rem] rounded-[1.8rem] border border-[var(--panel-border)] bg-[linear-gradient(180deg,rgba(14,20,32,0.98),rgba(10,14,24,1))] p-6 shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
-                <UISectionKicker className="tracking-[0.22em] text-white/30">UNSAVED CHANGES</UISectionKicker>
-                <div className="mt-2 text-[1.45rem] font-semibold tracking-tight text-white">关闭前要怎么处理当前工作流？</div>
-                <p className="mt-2 text-sm leading-7 text-white/46">
+            <div className="pointer-events-auto absolute inset-0 z-[100] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--bg-base)_62%,transparent)] px-6 backdrop-blur-md">
+              <UIPanel className="pointer-events-auto w-full max-w-[30rem] rounded-[1.8rem] border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-strong)_97%,transparent)] p-6 shadow-[0_30px_80px_var(--shadow-color)]">
+                <UISectionKicker className="tracking-[0.22em] text-[var(--text-secondary)]">UNSAVED CHANGES</UISectionKicker>
+                <div className="mt-2 text-[1.45rem] font-semibold tracking-tight text-[var(--text-primary)]">关闭前要怎么处理当前工作流？</div>
+                <p className="mt-2 text-sm leading-7 text-[var(--text-secondary)]">
                   {isSelectedWorkflowTemporary
                     ? '这个新建工作流还没有真正保存到列表里。保存会正式创建，不保存会直接丢弃。'
                     : '当前工作流有未保存修改。你可以保存后关闭，或直接丢弃本次改动。'}
                 </p>
 
                 <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
-                  <UIButton onClick={() => setShowDiscardPrompt(false)} tone="ghost" size="md" className="border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/72">
+                  <UIButton onClick={() => setShowDiscardPrompt(false)} tone="ghost" size="md" className="border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
                     继续编辑
                   </UIButton>
                   <UIButton
                     onClick={() => discardWorkflowChanges(selectedWorkflow)}
                     tone="ghost"
                     size="md"
-                    className="border-red-400/16 bg-red-500/[0.06] text-red-200"
+                    className="border-red-500/22 bg-red-500/[0.08] text-red-300 hover:bg-red-500/[0.12]"
                   >
                     丢弃更改
                   </UIButton>
@@ -2931,7 +3206,7 @@ export function WorkflowPanel({
                     }}
                     tone="primary"
                     size="md"
-                    className="bg-blue-600 text-white hover:bg-blue-500"
+                    className="bg-[var(--accent)] text-white hover:brightness-110"
                   >
                     保存并关闭
                   </UIButton>
@@ -2939,6 +3214,122 @@ export function WorkflowPanel({
               </UIPanel>
             </div>
           )}
+
+          {showExecutionResult && executionResult && (
+            <div className="pointer-events-auto absolute inset-0 z-40 flex items-center justify-center bg-[color:color-mix(in_srgb,var(--bg-base)_62%,transparent)] px-6 backdrop-blur-md">
+              <UIPanel className="pointer-events-auto max-h-[80vh] w-full max-w-[42rem] overflow-hidden rounded-[1.8rem] border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-strong)_97%,transparent)] p-6 shadow-[0_30px_80px_var(--shadow-color)]">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium ${
+                      executionResult.success
+                        ? 'border-emerald-400/25 bg-emerald-500/10 text-emerald-300'
+                        : 'border-red-400/25 bg-red-500/10 text-red-300'
+                    }`}>
+                      {executionResult.success ? (
+                        <><CheckSquare size={12} /> 执行成功</>
+                      ) : (
+                        <><X size={12} /> 执行失败</>
+                      )}
+                    </div>
+                    <div className="mt-2 text-[1.35rem] font-semibold tracking-tight text-[var(--text-primary)]">
+                      {selectedWorkflow?.name || '工作流'} 执行结果
+                    </div>
+                    <div className="mt-1 flex items-center gap-3 text-xs text-[var(--text-secondary)]">
+                      <span>耗时: {executionResult.executionTimeMs}ms</span>
+                      {executionResult.logs.length > 0 && (
+                        <span>节点执行: {executionResult.logs.filter(l => l.type === 'output').length} 个</span>
+                      )}
+                    </div>
+                  </div>
+                  <UIButton
+                    onClick={() => setShowExecutionResult(false)}
+                    tone="ghost"
+                    size="icon"
+                    className="rounded-full border border-[var(--panel-border)] bg-white/5"
+                  >
+                    <X size={16} />
+                  </UIButton>
+                </div>
+
+                {/* Output */}
+                <div className="mt-5 max-h-[36vh] space-y-4 overflow-y-auto">
+                  <div>
+                    <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-white/30">输出结果</div>
+                    <pre className="overflow-x-auto rounded-2xl border border-white/8 bg-black/25 p-4 text-sm leading-7 text-white/72 whitespace-pre-wrap break-words">
+                      {typeof executionResult.output === 'string'
+                        ? executionResult.output
+                        : JSON.stringify(executionResult.output, null, 2)}
+                    </pre>
+                  </div>
+
+                  {/* Logs summary */}
+                  {executionResult.logs.length > 0 && (
+                    <div>
+                      <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-white/30">
+                        执行日志 ({executionResult.logs.length} 条)
+                      </div>
+                      <div className="space-y-1">
+                        {executionResult.logs.slice(-5).map((log, i) => (
+                          <div key={i} className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-xs ${
+                            log.type === 'error'
+                              ? 'border-red-400/15 bg-red-500/5 text-red-300/80'
+                              : log.type === 'output'
+                                ? 'border-emerald-400/15 bg-emerald-500/5 text-emerald-300/80'
+                                : 'border-white/6 bg-white/3 text-white/50'
+                          }`}>
+                            <span className="shrink-0 opacity-60">{log.type}</span>
+                            <span className="truncate font-mono">{log.message.slice(0, 120)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+                  <UIButton
+                    onClick={() => {
+                      const text = typeof executionResult.output === 'string'
+                        ? executionResult.output
+                        : JSON.stringify(executionResult.output, null, 2);
+                      navigator.clipboard.writeText(text);
+                    }}
+                    tone="ghost"
+                    size="md"
+                    className="border-[var(--panel-border)] bg-[var(--surface-muted)] text-white/72"
+                  >
+                    <Copy size={14} />
+                    复制结果
+                  </UIButton>
+                  <UIButton
+                    onClick={() => {
+                      const text = typeof executionResult.output === 'string'
+                        ? executionResult.output
+                        : JSON.stringify(executionResult.output, null, 2);
+                      setShowExecutionResult(false);
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                      (window as any).dispatchEvent(new CustomEvent('workflow:insert-result', { detail: text }));
+                    }}
+                    tone="neutral"
+                    size="md"
+                  >
+                    插入到输入框
+                  </UIButton>
+                  <UIButton
+                    onClick={() => setShowExecutionResult(false)}
+                    tone="primary"
+                    size="md"
+                    className="bg-blue-600 text-white hover:bg-blue-500"
+                  >
+                    关闭
+                  </UIButton>
+                </div>
+              </UIPanel>
+            </div>
+          )}
+              </div>
+              </div>
+            </div>
         </UIOverlayPage>
       )}
     </UIPageShell>

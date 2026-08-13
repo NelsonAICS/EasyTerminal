@@ -3,6 +3,7 @@ import { Check, RefreshCw, ChevronDown, Brain } from 'lucide-react';
 import { type Provider } from '../types/agent';
 import { type ReasoningModelConfig } from '../types/app-settings';
 import { ProviderIcon } from './ProviderIcon';
+import { CONNECTION_STATUS_BADGE_CLASSES, CONNECTION_STATUS_LABELS, CONNECTION_TEST_BUTTON_LABELS } from '../lib/ui-copy';
 
 interface Props {
   config: ReasoningModelConfig;
@@ -36,18 +37,9 @@ export function ReasoningModelSection({ config, providers, onUpdate, onTest }: P
   };
 
   const statusBadge = () => {
-    const cls: Record<string, string> = {
-      success: 'bg-green-500/20 text-green-400',
-      error: 'bg-red-500/20 text-red-400',
-      testing: 'bg-yellow-500/20 text-yellow-400',
-      unknown: 'bg-gray-500/20 text-gray-400',
-    };
-    const label: Record<string, string> = {
-      success: '可用', error: '错误', testing: '测试中', unknown: '未测试',
-    };
     return (
-      <span className={`text-[10px] px-2 py-0.5 rounded-full ${cls[config.status]}`}>
-        {label[config.status]}
+      <span className={`text-[10px] px-2 py-0.5 rounded-full ${CONNECTION_STATUS_BADGE_CLASSES[config.status]}`}>
+        {CONNECTION_STATUS_LABELS[config.status]}
       </span>
     );
   };
@@ -142,9 +134,9 @@ export function ReasoningModelSection({ config, providers, onUpdate, onTest }: P
           }`}
         >
           {config.status === 'testing' ? (
-            <><RefreshCw size={14} className="animate-spin" /> 测试中...</>
+            <><RefreshCw size={14} className="animate-spin" /> {CONNECTION_TEST_BUTTON_LABELS.testing}</>
           ) : (
-            <><Check size={14} /> 测试连通性</>
+            <><Check size={14} /> {CONNECTION_TEST_BUTTON_LABELS.unknown}</>
           )}
         </button>
       </div>

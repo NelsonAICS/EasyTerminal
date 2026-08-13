@@ -19,6 +19,7 @@ export interface EmbeddingModelConfig {
   providerId?: string;
   /** When source='custom' */
   customBaseUrl?: string;
+  customEmbeddingEndpoint?: string;
   customApiKey?: string;
   model: string;
   dimensions: number;

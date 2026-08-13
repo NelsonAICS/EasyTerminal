@@ -1,8 +1,22 @@
-// SkillPanel — Skill browsing, discovery, and semantic search
-
 import { useState, useEffect, useCallback } from 'react';
-import { Search, RefreshCw, Box, Trash2, ToggleLeft, ToggleRight, Zap } from 'lucide-react';
+import { Box, RefreshCw, Search, ToggleLeft, ToggleRight, Trash2, Zap } from 'lucide-react';
 import { type Skill } from '../types/agent-extension';
+import {
+  UIBadge,
+  UIButton,
+  UIEmptyState,
+  UIFieldLabel,
+  UIInfoCard,
+  UIInput,
+  UIInlineAction,
+  UIMasterDetailContent,
+  UIMasterDetailShell,
+  UIMasterDetailSidebar,
+  UIPaneBody,
+  UIPaneFooter,
+  UIPaneHeader,
+  UICatalogItem,
+} from './ui';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
@@ -15,7 +29,7 @@ export function SkillPanel() {
   const [categories, setCategories] = useState<string[]>([]);
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
 
-  const selected = skills.find(s => s.id === selectedId);
+  const selected = skills.find(skill => skill.id === selectedId) || null;
 
   const loadSkills = useCallback(async () => {
     if (!ipcRenderer) return;
@@ -25,10 +39,15 @@ export function SkillPanel() {
     setCategories(cats || []);
   }, [activeCategory]);
 
-  useEffect(() => { loadSkills(); }, [loadSkills]);
+  useEffect(() => {
+    void loadSkills();
+  }, [loadSkills]);
 
   const handleSearch = async () => {
-    if (!ipcRenderer || !searchQuery.trim()) { setSearchResults([]); return; }
+    if (!ipcRenderer || !searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
     try {
       const results = await ipcRenderer.invoke('skill:search', searchQuery, 10);
       setSearchResults(results || []);
@@ -42,7 +61,7 @@ export function SkillPanel() {
     setReindexing(true);
     try {
       await ipcRenderer.invoke('skill:reindex');
-      loadSkills();
+      void loadSkills();
     } finally {
       setReindexing(false);
     }
@@ -51,139 +70,185 @@ export function SkillPanel() {
   const handleToggle = async (id: string, enabled: boolean) => {
     if (!ipcRenderer) return;
     await ipcRenderer.invoke('skill:toggle', id, !enabled);
-    loadSkills();
+    void loadSkills();
   };
 
   const handleDelete = async (id: string) => {
     if (!ipcRenderer) return;
     await ipcRenderer.invoke('skill:delete', id);
     if (selectedId === id) setSelectedId(null);
-    loadSkills();
+    void loadSkills();
   };
 
-  const displayList = searchResults.length > 0
-    ? searchResults.map(r => r.skill)
-    : skills;
+  const displayList = searchResults.length > 0 ? searchResults.map(result => result.skill) : skills;
 
   return (
-    <div className="flex h-full">
-      {/* Left: Skill List */}
-      <div className="w-72 border-r border-white/10 flex flex-col bg-black/20 shrink-0">
-        <div className="p-3 border-b border-white/10 space-y-2">
-          <div className="relative">
-            <Search size={14} className="absolute left-3 top-2.5 text-white/30" />
-            <input
+    <UIMasterDetailShell>
+      <UIMasterDetailSidebar widthClass="w-[22rem]">
+        <UIPaneHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">Skill Hub</div>
+              <div className="mt-1 text-lg font-semibold text-[var(--text-primary)]">能力目录</div>
+            </div>
+            <UIBadge className="px-2.5 py-1 text-[10px]">{displayList.length} 项</UIBadge>
+          </div>
+
+          <div className="relative mt-4">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
+            <UIInput
               value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleSearch()}
-              placeholder="语义搜索 Skill..."
-              className="w-full pl-9 pr-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs focus:border-white/20 focus:outline-none"
+              onChange={event => setSearchQuery(event.target.value)}
+              onKeyDown={event => event.key === 'Enter' && void handleSearch()}
+              placeholder="语义搜索 Skill"
+              className="h-10 pl-9 text-xs"
             />
           </div>
-          <div className="flex gap-1.5 flex-wrap">
+
+          <div className="mt-4 flex flex-wrap gap-2">
             <button
+              type="button"
               onClick={() => setActiveCategory(null)}
-              className={`text-[10px] px-2 py-0.5 rounded-full ${!activeCategory ? 'bg-blue-500/20 text-blue-400' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}
-            >全部</button>
-            {categories.map(c => (
+              className={`rounded-full px-3 py-1 text-[10px] transition-colors ${
+                !activeCategory
+                  ? 'bg-cyan-500/18 text-cyan-100'
+                  : 'bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              全部
+            </button>
+            {categories.map(category => (
               <button
-                key={c}
-                onClick={() => setActiveCategory(c)}
-                className={`text-[10px] px-2 py-0.5 rounded-full ${activeCategory === c ? 'bg-blue-500/20 text-blue-400' : 'bg-white/5 text-white/40 hover:bg-white/10'}`}
-              >{c}</button>
+                key={category}
+                type="button"
+                onClick={() => setActiveCategory(category)}
+                className={`rounded-full px-3 py-1 text-[10px] transition-colors ${
+                  activeCategory === category
+                    ? 'bg-cyan-500/18 text-cyan-100'
+                    : 'bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+                }`}
+              >
+                {category}
+              </button>
             ))}
           </div>
-        </div>
+        </UIPaneHeader>
 
-        <div className="flex-1 overflow-y-auto">
-          {displayList.map(s => (
-            <div
-              key={s.id}
-              onClick={() => { setSelectedId(s.id); setSearchResults([]); }}
-              className={`px-3 py-2.5 cursor-pointer border-b border-white/5 transition-colors ${
-                selectedId === s.id ? 'bg-white/10' : 'hover:bg-white/5'
-              } ${!s.enabled ? 'opacity-40' : ''}`}
-            >
-              <div className="flex items-center gap-2">
-                <Box size={13} className="text-cyan-400/70 shrink-0" />
-                <span className="text-xs text-white truncate flex-1">{s.name}</span>
-                {!s.enabled && <span className="text-[9px] text-white/30">已禁用</span>}
-              </div>
-              {s.description && <p className="text-[10px] text-white/40 mt-0.5 line-clamp-1">{s.description}</p>}
-            </div>
-          ))}
-          {displayList.length === 0 && (
-            <div className="p-4 text-center text-white/30 text-xs">
-              <Box size={20} className="mx-auto mb-2 opacity-40" />
-              暂无 Skill<br />
-              <span className="text-[10px]">将 Skill 放入 ~/.easyterminal/skills/ 目录</span>
-            </div>
+        <UIPaneBody className="space-y-2 px-3 py-3">
+          {displayList.length > 0 ? (
+            displayList.map(skill => (
+              <UICatalogItem
+                key={skill.id}
+                heading={skill.name}
+                description={skill.description}
+                selected={selectedId === skill.id}
+                disabled={!skill.enabled}
+                onClick={() => {
+                  setSelectedId(skill.id);
+                  setSearchResults([]);
+                }}
+                leading={<Box size={16} className="text-cyan-300" />}
+                trailing={
+                  !skill.enabled ? (
+                    <span className="text-[10px] text-[var(--text-secondary)]">已禁用</span>
+                  ) : undefined
+                }
+                meta={<span>{skill.category}</span>}
+              />
+            ))
+          ) : (
+            <UIEmptyState
+              icon={<Box size={22} />}
+              title="没有可显示的 Skill"
+              description="可以先重建索引，或者把新的 Skill 放到技能目录后再回来刷新。"
+            />
           )}
-        </div>
+        </UIPaneBody>
 
-        <div className="p-3 border-t border-white/10">
-          <button
-            onClick={handleReindex}
-            disabled={reindexing}
-            className="w-full py-2 rounded-lg bg-cyan-500/20 text-cyan-400 text-xs font-medium hover:bg-cyan-500/30 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-          >
-            <RefreshCw size={14} className={reindexing ? 'animate-spin' : ''} />
+        <UIPaneFooter>
+          <UIButton onClick={() => void handleReindex()} tone="primary" className="w-full justify-center" disabled={reindexing}>
+            <RefreshCw size={15} className={reindexing ? 'animate-spin' : ''} />
             {reindexing ? '重建索引中...' : '重建索引'}
-          </button>
-        </div>
-      </div>
+          </UIButton>
+        </UIPaneFooter>
+      </UIMasterDetailSidebar>
 
-      {/* Right: Detail */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {selected ? (
-          <div className="max-w-lg mx-auto">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-xl bg-cyan-500/10 flex items-center justify-center">
-                <Box size={20} className="text-cyan-400" />
+      <UIMasterDetailContent>
+        <UIPaneHeader>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+                {selected ? 'Skill Detail' : 'Overview'}
               </div>
-              <div className="flex-1">
-                <h3 className="text-sm font-medium text-white">{selected.name}</h3>
-                <p className="text-xs text-white/40">{selected.category}</p>
+              <div className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
+                {selected ? selected.name : '技能详情面板'}
               </div>
-              <button onClick={() => handleToggle(selected.id, !!selected.enabled)} className="text-white/50 hover:text-white">
-                {selected.enabled ? <ToggleRight size={20} className="text-green-400" /> : <ToggleLeft size={20} />}
-              </button>
+              <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                {selected
+                  ? '查看描述、分类、Schema 和启停状态，确保技能能力边界清晰。'
+                  : '左侧是按语义和分类组织的 Skill 列表，选中后在这里查看细节。'}
+              </div>
             </div>
-
-            {selected.description && (
-              <div className="mb-4 p-3 rounded-xl bg-white/5 border border-white/10">
-                <p className="text-xs text-white/70">{selected.description}</p>
+            {selected && (
+              <div className="flex items-center gap-2">
+                <UIInlineAction onClick={() => void handleToggle(selected.id, !!selected.enabled)} tone="neutral">
+                  {selected.enabled ? <ToggleRight size={15} className="text-emerald-300" /> : <ToggleLeft size={15} />}
+                  {selected.enabled ? '已启用' : '已禁用'}
+                </UIInlineAction>
+                <UIInlineAction onClick={() => void handleDelete(selected.id)} tone="danger">
+                  <Trash2 size={13} />
+                  删除
+                </UIInlineAction>
               </div>
             )}
+          </div>
+        </UIPaneHeader>
 
-            {selected.tags.length > 0 && (
-              <div className="flex gap-1.5 mb-4 flex-wrap">
-                {selected.tags.map(t => (
-                  <span key={t} className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400/60">{t}</span>
+        <UIPaneBody className="px-6 py-6">
+          {selected ? (
+            <div className="mx-auto max-w-3xl space-y-5">
+              <div className="flex flex-wrap gap-2">
+                <UIBadge className="px-2.5 py-1 text-[10px]">{selected.category}</UIBadge>
+                <UIBadge tone={selected.enabled ? 'success' : 'danger'} className="px-2.5 py-1 text-[10px]">
+                  {selected.enabled ? 'Enabled' : 'Disabled'}
+                </UIBadge>
+                {selected.tags.map(tag => (
+                  <UIBadge key={tag} className="px-2.5 py-1 text-[10px] bg-cyan-500/12 text-cyan-100 border-cyan-400/14">
+                    {tag}
+                  </UIBadge>
                 ))}
               </div>
-            )}
 
-            {Object.keys(selected.input_schema).length > 0 && (
-              <div className="mb-3">
-                <label className="text-xs text-white/60 mb-1 block flex items-center gap-1"><Zap size={11} /> 输入 Schema</label>
-                <pre className="text-[10px] text-white/50 bg-black/30 rounded-lg p-3 overflow-x-auto">
-                  {JSON.stringify(selected.input_schema, null, 2)}
-                </pre>
-              </div>
-            )}
+              {selected.description && (
+                <UIInfoCard>
+                  <div className="text-sm font-medium text-[var(--text-primary)]">能力说明</div>
+                  <p className="mt-3 text-sm leading-7 text-[var(--text-secondary)]">{selected.description}</p>
+                </UIInfoCard>
+              )}
 
-            <button onClick={() => handleDelete(selected.id)} className="mt-4 px-3 py-1.5 rounded-lg text-xs text-red-400 hover:bg-red-500/10">
-              <Trash2 size={12} className="inline mr-1" /> 删除
-            </button>
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full text-white/30 gap-2">
-            <Box size={32} />
-            <p className="text-xs">选择一个 Skill 查看详情</p>
-          </div>
-        )}
-      </div>
-    </div>
+              <UIInfoCard>
+                <UIFieldLabel className="mb-3 flex items-center gap-2">
+                  <Zap size={12} />
+                  输入 Schema
+                </UIFieldLabel>
+                {Object.keys(selected.input_schema).length > 0 ? (
+                  <pre className="overflow-x-auto rounded-[1.25rem] border border-[var(--panel-border)] bg-black/20 p-5 text-xs leading-6 text-[var(--text-primary)]">
+                    {JSON.stringify(selected.input_schema, null, 2)}
+                  </pre>
+                ) : (
+                  <div className="text-sm text-[var(--text-secondary)]">当前 Skill 没有定义输入 Schema。</div>
+                )}
+              </UIInfoCard>
+            </div>
+          ) : (
+            <UIEmptyState
+              icon={<Box size={22} />}
+              title="选择一个 Skill 查看详情"
+              description="建议优先关注启用状态、用途说明和输入 Schema，避免使用时边界不清。"
+            />
+          )}
+        </UIPaneBody>
+      </UIMasterDetailContent>
+    </UIMasterDetailShell>
   );
 }

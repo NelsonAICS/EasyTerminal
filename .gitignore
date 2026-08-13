@@ -31,3 +31,8 @@ dist-electron/
 # Context Vault Storage
 .easy_context/
 
+# Design workspace
+design/
+
+# Documentation
+docs/

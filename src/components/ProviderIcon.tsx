@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react';
 import { icons, getIconMetadata, hasIcon } from '../icons';
 
 // Provider SVG Icons component
@@ -33,13 +34,13 @@ export function ProviderIcon({ name, size = 20, className = '' }: IconProps) {
     const { inner, attrs } = parseSvgContent(svgContent);
 
     // Build style with size and currentColor replaced by white
-    const style: Record<string, string> = {
+    const style: CSSProperties = {
       width: `${size}px`,
       height: `${size}px`,
       display: 'inline-flex',
-      'align-items': 'center',
-      'justify-content': 'center',
-      'flex-shrink': '0',
+      alignItems: 'center',
+      justifyContent: 'center',
+      flexShrink: 0,
     };
 
     // Process inner content - replace currentColor and dark colors with white

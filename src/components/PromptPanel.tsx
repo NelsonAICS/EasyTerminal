@@ -1,8 +1,24 @@
-// PromptPanel — Prompt template management with CRUD, variable extraction, and LLM optimization
-
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Trash2, Edit3, Search, Sparkles, Variable, Save, FileText } from 'lucide-react';
+import { Edit3, FileText, Plus, Save, Search, Sparkles, Trash2, Variable } from 'lucide-react';
 import { type Prompt } from '../types/agent-extension';
+import {
+  UIBadge,
+  UIButton,
+  UIEmptyState,
+  UIFieldLabel,
+  UIInfoCard,
+  UIInput,
+  UIInlineAction,
+  UIMasterDetailContent,
+  UIMasterDetailShell,
+  UIMasterDetailSidebar,
+  UIPaneBody,
+  UIPaneFooter,
+  UIPaneHeader,
+  UICatalogItem,
+  UISelect,
+  UITextarea,
+} from './ui';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
@@ -17,7 +33,7 @@ export function PromptPanel() {
   const [optimizing, setOptimizing] = useState(false);
   const [optimizedContent, setOptimizedContent] = useState<string | null>(null);
 
-  const selected = prompts.find(p => p.id === selectedId);
+  const selected = prompts.find(prompt => prompt.id === selectedId) || null;
 
   const loadPrompts = useCallback(async () => {
     if (!ipcRenderer) return;
@@ -25,11 +41,16 @@ export function PromptPanel() {
     setPrompts(data || []);
   }, []);
 
-  useEffect(() => { loadPrompts(); }, [loadPrompts]);
+  useEffect(() => {
+    void loadPrompts();
+  }, [loadPrompts]);
 
   const handleSearch = async () => {
     if (!ipcRenderer) return;
-    if (!searchQuery.trim()) { loadPrompts(); return; }
+    if (!searchQuery.trim()) {
+      void loadPrompts();
+      return;
+    }
     const data = await ipcRenderer.invoke('prompt:search', searchQuery);
     setPrompts(data || []);
   };
@@ -40,11 +61,11 @@ export function PromptPanel() {
       title: form.title,
       content: form.content,
       category: form.category,
-      tags: form.tags.split(',').map(t => t.trim()).filter(Boolean),
+      tags: form.tags.split(',').map(tag => tag.trim()).filter(Boolean),
     });
     setEditing(null);
     setForm({ title: '', content: '', category: 'general', tags: '' });
-    loadPrompts();
+    void loadPrompts();
   };
 
   const handleUpdate = async () => {
@@ -53,17 +74,17 @@ export function PromptPanel() {
       title: form.title,
       content: form.content,
       category: form.category,
-      tags: form.tags.split(',').map(t => t.trim()).filter(Boolean),
+      tags: form.tags.split(',').map(tag => tag.trim()).filter(Boolean),
     });
     setEditing(null);
-    loadPrompts();
+    void loadPrompts();
   };
 
   const handleDelete = async (id: string) => {
     if (!ipcRenderer) return;
     await ipcRenderer.invoke('prompt:delete', id);
     if (selectedId === id) setSelectedId(null);
-    loadPrompts();
+    void loadPrompts();
   };
 
   const handleOptimize = async () => {
@@ -87,209 +108,293 @@ export function PromptPanel() {
       tags: prompt.tags.join(', '),
     });
     setEditing('edit');
+    setOptimizedContent(null);
   };
 
   const startCreate = () => {
     setForm({ title: '', content: '', category: 'general', tags: '' });
     setEditing('create');
+    setOptimizedContent(null);
+    setSelectedId(null);
   };
 
   const extractVars = (content: string): string[] => {
     const matches = content.matchAll(/\{\{(\w+)\}\}/g);
-    return [...new Set(Array.from(matches, m => m[1]))];
+    return [...new Set(Array.from(matches, match => match[1]))];
   };
 
+  const formVariables = extractVars(form.content);
+
   return (
-    <div className="flex h-full">
-      {/* Left: Prompt List */}
-      <div className="w-64 border-r border-white/10 flex flex-col bg-black/20 shrink-0">
-        <div className="p-3 border-b border-white/10">
-          <div className="relative">
-            <Search size={14} className="absolute left-3 top-2.5 text-white/30" />
-            <input
+    <UIMasterDetailShell>
+      <UIMasterDetailSidebar widthClass="w-[20rem]">
+        <UIPaneHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">Prompt Library</div>
+              <div className="mt-1 text-lg font-semibold text-[var(--text-primary)]">模板与片段</div>
+            </div>
+            <UIBadge className="px-2.5 py-1 text-[10px]">{prompts.length} 个模板</UIBadge>
+          </div>
+          <div className="relative mt-4">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-secondary)]" />
+            <UIInput
               value={searchQuery}
-              onChange={e => setSearchQuery(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleSearch()}
-              placeholder="搜索 Prompt..."
-              className="w-full pl-9 pr-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-xs focus:border-white/20 focus:outline-none"
+              onChange={event => setSearchQuery(event.target.value)}
+              onKeyDown={event => event.key === 'Enter' && void handleSearch()}
+              placeholder="搜索 Prompt、标签、用途"
+              className="h-10 pl-9 text-xs"
             />
           </div>
-        </div>
-        <div className="flex-1 overflow-y-auto">
-          {prompts.map(p => (
-            <div
-              key={p.id}
-              onClick={() => { setSelectedId(p.id); setEditing(null); setOptimizedContent(null); }}
-              className={`px-3 py-2.5 cursor-pointer border-b border-white/5 transition-colors ${
-                selectedId === p.id ? 'bg-white/10' : 'hover:bg-white/5'
-              }`}
-            >
-              <div className="flex items-center gap-2">
-                <FileText size={13} className="text-blue-400/70 shrink-0" />
-                <span className="text-xs text-white truncate flex-1">{p.title}</span>
-                <button
-                  onClick={e => { e.stopPropagation(); handleDelete(p.id); }}
-                  className="opacity-0 group-hover:opacity-100 hover:text-red-400 text-white/30 transition-all"
-                >
-                  <Trash2 size={12} />
-                </button>
-              </div>
-              <div className="flex items-center gap-1.5 mt-1">
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/40">{p.category}</span>
-                {p.variables.length > 0 && (
-                  <span className="text-[10px] text-white/30 flex items-center gap-0.5">
-                    <Variable size={9} /> {p.variables.length}
-                  </span>
-                )}
-              </div>
-            </div>
-          ))}
-          {prompts.length === 0 && (
-            <div className="p-4 text-center text-white/30 text-xs">暂无 Prompt</div>
-          )}
-        </div>
-        <div className="p-3 border-t border-white/10">
-          <button
-            onClick={startCreate}
-            className="w-full py-2 rounded-lg bg-blue-500/20 text-blue-400 text-xs font-medium hover:bg-blue-500/30 transition-colors flex items-center justify-center gap-1.5"
-          >
-            <Plus size={14} /> 新建 Prompt
-          </button>
-        </div>
-      </div>
+        </UIPaneHeader>
 
-      {/* Right: Detail / Editor */}
-      <div className="flex-1 overflow-y-auto p-4">
-        {editing ? (
-          /* Create / Edit Form */
-          <div className="max-w-lg mx-auto space-y-3">
-            <h3 className="text-sm font-medium text-white flex items-center gap-2">
-              {editing === 'create' ? <Plus size={16} /> : <Edit3 size={16} />}
-              {editing === 'create' ? '新建 Prompt' : '编辑 Prompt'}
-            </h3>
-            <div>
-              <label className="block text-xs text-white/60 mb-1">标题</label>
-              <input
-                value={form.title}
-                onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-                className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:border-white/20 focus:outline-none"
-                placeholder="Prompt 标题"
+        <UIPaneBody className="space-y-2 px-3 py-3">
+          {prompts.length > 0 ? (
+            prompts.map(prompt => (
+              <UICatalogItem
+                key={prompt.id}
+                heading={prompt.title}
+                description={prompt.content}
+                selected={selectedId === prompt.id && !editing}
+                onClick={() => {
+                  setSelectedId(prompt.id);
+                  setEditing(null);
+                  setOptimizedContent(null);
+                }}
+                leading={<FileText size={16} className="text-blue-300" />}
+                trailing={
+                  <button
+                    type="button"
+                    onClick={event => {
+                      event.stopPropagation();
+                      void handleDelete(prompt.id);
+                    }}
+                    className="rounded-full p-1 text-[var(--text-secondary)] hover:bg-red-500/10 hover:text-red-300"
+                    title="删除 Prompt"
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                }
+                meta={
+                  <>
+                    <UIBadge className="px-2 py-0.5 text-[10px]">{prompt.category}</UIBadge>
+                    {prompt.variables.length > 0 && (
+                      <span className="inline-flex items-center gap-1">
+                        <Variable size={11} />
+                        {prompt.variables.length} 个变量
+                      </span>
+                    )}
+                  </>
+                }
               />
-            </div>
+            ))
+          ) : (
+            <UIEmptyState
+              icon={<FileText size={22} />}
+              title="还没有 Prompt"
+              description="把常用指令、审查模板和 Agent 任务片段沉淀下来，后续复用会顺很多。"
+            />
+          )}
+        </UIPaneBody>
+
+        <UIPaneFooter>
+          <UIButton onClick={startCreate} tone="primary" className="w-full justify-center">
+            <Plus size={15} />
+            新建 Prompt
+          </UIButton>
+        </UIPaneFooter>
+      </UIMasterDetailSidebar>
+
+      <UIMasterDetailContent>
+        <UIPaneHeader>
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <label className="block text-xs text-white/60 mb-1">内容</label>
-              <textarea
-                value={form.content}
-                onChange={e => setForm(f => ({ ...f, content: e.target.value }))}
-                rows={8}
-                className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm font-mono focus:border-white/20 focus:outline-none resize-y"
-                placeholder="Prompt 内容，使用 {{variable}} 定义变量"
-              />
-              {form.content && extractVars(form.content).length > 0 && (
-                <div className="flex gap-1 mt-1 flex-wrap">
-                  {extractVars(form.content).map(v => (
-                    <span key={v} className="text-[10px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400 flex items-center gap-0.5">
-                      <Variable size={9} /> {v}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="flex gap-3">
-              <div className="flex-1">
-                <label className="block text-xs text-white/60 mb-1">分类</label>
-                <select
-                  value={form.category}
-                  onChange={e => setForm(f => ({ ...f, category: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:border-white/20 focus:outline-none"
-                >
-                  {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                </select>
+              <div className="text-[11px] uppercase tracking-[0.22em] text-[var(--text-secondary)]">
+                {editing ? 'Editor' : selected ? 'Detail' : 'Workspace'}
               </div>
-              <div className="flex-1">
-                <label className="block text-xs text-white/60 mb-1">标签 (逗号分隔)</label>
-                <input
+              <div className="mt-1 text-xl font-semibold text-[var(--text-primary)]">
+                {editing === 'create'
+                  ? '创建新模板'
+                  : editing === 'edit'
+                    ? '编辑 Prompt'
+                    : selected
+                      ? selected.title
+                      : 'Prompt 工作区'}
+              </div>
+              <div className="mt-2 text-sm leading-6 text-[var(--text-secondary)]">
+                {editing
+                  ? '统一维护标题、正文、标签和变量。优化动作会直接写回到当前草稿。'
+                  : selected
+                    ? '查看模板内容、变量入口和标签信息，随时切到编辑态。'
+                    : '从左侧挑一个 Prompt 查看，或者新建一个常用模板。'}
+              </div>
+            </div>
+            {selected && !editing && (
+              <div className="flex items-center gap-2">
+                <UIInlineAction onClick={() => startEdit(selected)} tone="neutral">
+                  <Edit3 size={13} />
+                  编辑
+                </UIInlineAction>
+                <UIInlineAction onClick={() => void handleDelete(selected.id)} tone="danger">
+                  <Trash2 size={13} />
+                  删除
+                </UIInlineAction>
+              </div>
+            )}
+          </div>
+        </UIPaneHeader>
+
+        <UIPaneBody className="px-6 py-6">
+          {editing ? (
+            <div className="mx-auto max-w-3xl space-y-5">
+              <div className="grid gap-5 md:grid-cols-2">
+                <div>
+              <UIFieldLabel htmlFor="prompt-title">标题</UIFieldLabel>
+                  <UIInput
+                    id="prompt-title"
+                    value={form.title}
+                    onChange={event => setForm(current => ({ ...current, title: event.target.value }))}
+                    placeholder="例如：代码审查总结"
+                  />
+                </div>
+                <div>
+              <UIFieldLabel htmlFor="prompt-category">分类</UIFieldLabel>
+                  <UISelect
+                    id="prompt-category"
+                    value={form.category}
+                    onChange={event => setForm(current => ({ ...current, category: event.target.value }))}
+                  >
+                    {CATEGORIES.map(category => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </UISelect>
+                </div>
+              </div>
+
+              <div>
+                <UIFieldLabel htmlFor="prompt-tags">标签</UIFieldLabel>
+                <UIInput
+                  id="prompt-tags"
                   value={form.tags}
-                  onChange={e => setForm(f => ({ ...f, tags: e.target.value }))}
-                  className="w-full px-3 py-2 rounded-lg bg-black/40 border border-white/10 text-white text-sm focus:border-white/20 focus:outline-none"
-                  placeholder="coding, review"
+                  onChange={event => setForm(current => ({ ...current, tags: event.target.value }))}
+                  placeholder="coding, review, shell"
                 />
               </div>
-            </div>
 
-            {/* Optimize section */}
-            {form.content && (
-              <div className="p-3 rounded-xl bg-white/5 border border-white/10">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-white/60 flex items-center gap-1"><Sparkles size={12} className="text-purple-400" /> AI 优化</span>
-                  <button
-                    onClick={handleOptimize}
-                    disabled={optimizing}
-                    className="px-3 py-1 rounded-lg bg-purple-500/20 text-purple-400 text-[10px] font-medium hover:bg-purple-500/30 transition-colors disabled:opacity-50"
-                  >
-                    {optimizing ? '优化中...' : '优化 Prompt'}
-                  </button>
-                </div>
-                {optimizedContent && (
-                  <div className="space-y-2">
-                    <pre className="text-xs text-white/70 whitespace-pre-wrap bg-black/30 rounded-lg p-3 max-h-40 overflow-y-auto">{optimizedContent}</pre>
-                    <button
-                      onClick={() => { setForm(f => ({ ...f, content: optimizedContent })); setOptimizedContent(null); }}
-                      className="text-[10px] text-blue-400 hover:text-blue-300"
-                    >
-                      使用优化后的内容
-                    </button>
+              <div>
+                <UIFieldLabel htmlFor="prompt-content">内容</UIFieldLabel>
+                <UITextarea
+                  id="prompt-content"
+                  rows={12}
+                  value={form.content}
+                  onChange={event => setForm(current => ({ ...current, content: event.target.value }))}
+                  placeholder="使用 {{variable}} 作为变量占位符"
+                  className="min-h-[16rem] font-mono text-[13px] leading-7"
+                />
+                {formVariables.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {formVariables.map(variable => (
+                      <UIBadge key={variable} className="px-2.5 py-1 text-[10px] text-cyan-200">
+                        <Variable size={10} />
+                        {variable}
+                      </UIBadge>
+                    ))}
                   </div>
                 )}
               </div>
-            )}
 
-            <div className="flex gap-2 pt-2">
-              <button onClick={editing === 'create' ? handleCreate : handleUpdate} className="flex-1 py-2 rounded-lg bg-blue-500/20 text-blue-400 text-xs font-medium hover:bg-blue-500/30 flex items-center justify-center gap-1.5">
-                <Save size={14} /> {editing === 'create' ? '创建' : '保存'}
-              </button>
-              <button onClick={() => setEditing(null)} className="px-4 py-2 rounded-lg bg-white/10 text-white/60 text-xs hover:bg-white/15">
-                取消
-              </button>
-            </div>
-          </div>
-        ) : selected ? (
-          /* Detail View */
-          <div className="max-w-lg mx-auto">
-            <div className="flex items-center gap-3 mb-4">
-              <h3 className="text-sm font-medium text-white flex-1">{selected.title}</h3>
-              <button onClick={() => startEdit(selected)} className="p-1.5 rounded-lg hover:bg-white/10 text-white/50 hover:text-white"><Edit3 size={14} /></button>
-              <button onClick={() => handleDelete(selected.id)} className="p-1.5 rounded-lg hover:bg-red-500/20 text-white/50 hover:text-red-400"><Trash2 size={14} /></button>
-            </div>
-            <div className="flex gap-1.5 mb-3 flex-wrap">
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/40">{selected.category}</span>
-              {selected.tags.map(t => <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400/60">{t}</span>)}
-            </div>
-            <pre className="text-xs text-white/80 whitespace-pre-wrap bg-black/30 rounded-xl p-4 border border-white/10 max-h-96 overflow-y-auto">{selected.content}</pre>
-            {selected.variables.length > 0 && (
-              <div className="mt-3">
-                <span className="text-xs text-white/60 mb-1.5 block">变量:</span>
-                <div className="flex gap-1.5 flex-wrap">
-                  {selected.variables.map(v => (
-                    <span key={v} className="text-[10px] px-2 py-1 rounded-lg bg-cyan-500/10 text-cyan-400 flex items-center gap-1">
-                      <Variable size={10} /> {v}
-                    </span>
-                  ))}
+              <UIInfoCard className="space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-[var(--text-primary)]">AI 优化</div>
+                    <div className="mt-1 text-xs leading-5 text-[var(--text-secondary)]">
+                      对当前草稿做结构化整理，方便形成更稳定的 Prompt 模板。
+                    </div>
+                  </div>
+                  <UIButton onClick={() => void handleOptimize()} tone="neutral" disabled={optimizing || !form.content.trim()}>
+                    <Sparkles size={14} />
+                    {optimizing ? '优化中...' : '优化内容'}
+                  </UIButton>
                 </div>
+                {optimizedContent && (
+                  <div className="space-y-3">
+                    <pre className="max-h-56 overflow-y-auto rounded-[1.25rem] border border-[var(--panel-border)] bg-black/20 p-4 text-xs leading-6 text-[var(--text-primary)] whitespace-pre-wrap">
+                      {optimizedContent}
+                    </pre>
+                    <UIButton
+                      tone="primary"
+                      onClick={() => {
+                        setForm(current => ({ ...current, content: optimizedContent }));
+                        setOptimizedContent(null);
+                      }}
+                    >
+                      使用优化后的内容
+                    </UIButton>
+                  </div>
+                )}
+              </UIInfoCard>
+
+              <div className="flex items-center justify-end gap-3">
+                <UIButton onClick={() => setEditing(null)} tone="ghost">
+                  取消
+                </UIButton>
+                <UIButton onClick={() => void (editing === 'create' ? handleCreate() : handleUpdate())} tone="primary">
+                  <Save size={14} />
+                  {editing === 'create' ? '创建 Prompt' : '保存修改'}
+                </UIButton>
               </div>
-            )}
-          </div>
-        ) : (
-          /* Empty state */
-          <div className="flex flex-col items-center justify-center h-full text-white/30 gap-2">
-            <FileText size={32} />
-            <p className="text-xs">选择或创建一个 Prompt</p>
-            <button onClick={startCreate} className="mt-2 px-4 py-2 rounded-lg bg-blue-500/20 text-blue-400 text-xs hover:bg-blue-500/30 flex items-center gap-1.5">
-              <Plus size={14} /> 新建
-            </button>
-          </div>
-        )}
-      </div>
-    </div>
+            </div>
+          ) : selected ? (
+            <div className="mx-auto max-w-3xl space-y-5">
+              <div className="flex flex-wrap gap-2">
+                <UIBadge className="px-2.5 py-1 text-[10px]">{selected.category}</UIBadge>
+                {selected.tags.map(tag => (
+                  <UIBadge key={tag} className="px-2.5 py-1 text-[10px] bg-blue-500/12 text-blue-100 border-blue-400/14">
+                    {tag}
+                  </UIBadge>
+                ))}
+              </div>
+
+              <UIInfoCard>
+                <div className="text-sm font-medium text-[var(--text-primary)]">模板内容</div>
+                <pre className="mt-4 max-h-[28rem] overflow-y-auto rounded-[1.25rem] border border-[var(--panel-border)] bg-black/20 p-5 text-[13px] leading-7 text-[var(--text-primary)] whitespace-pre-wrap">
+                  {selected.content}
+                </pre>
+              </UIInfoCard>
+
+              <UIInfoCard>
+                <div className="text-sm font-medium text-[var(--text-primary)]">变量入口</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {selected.variables.length > 0 ? (
+                    selected.variables.map(variable => (
+                      <UIBadge key={variable} className="px-2.5 py-1 text-[10px] text-cyan-200">
+                        <Variable size={10} />
+                        {variable}
+                      </UIBadge>
+                    ))
+                  ) : (
+                    <span className="text-sm text-[var(--text-secondary)]">当前模板没有定义变量。</span>
+                  )}
+                </div>
+              </UIInfoCard>
+            </div>
+          ) : (
+            <UIEmptyState
+              icon={<FileText size={22} />}
+              title="选择一个 Prompt 开始"
+              description="左侧可以浏览模板库，也可以直接新建一个常用 Prompt。"
+              action={
+                <UIButton onClick={startCreate} tone="primary">
+                  <Plus size={14} />
+                  新建 Prompt
+                </UIButton>
+              }
+            />
+          )}
+        </UIPaneBody>
+      </UIMasterDetailContent>
+    </UIMasterDetailShell>
   );
 }

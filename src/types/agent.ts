@@ -21,6 +21,8 @@ export interface Provider {
   name: string;
   icon: string;
   baseUrl: string;
+  chatEndpoint?: string;
+  embeddingEndpoint?: string;
   apiKey: string;
   models: string;
   status: 'unknown' | 'testing' | 'success' | 'error';

@@ -8,8 +8,16 @@ import { ProviderIcon } from './ProviderIcon';
 import { ReasoningModelSection } from './ReasoningModelSection';
 import { EmbeddingModelSection } from './EmbeddingModelSection';
 import { ExternalServicesSection } from './ExternalServicesSection';
+import { CONNECTION_TEST_BUTTON_LABELS, CONNECTION_STATUS_LABELS } from '../lib/ui-copy';
 import { type AppId, type Provider, type AgentConfig, DEFAULT_PROVIDERS, DEFAULT_AGENTS } from '../types/agent';
 import { type AppSettingsConfig, type ExternalServiceConfig, type ServiceStatus, DEFAULT_APP_SETTINGS } from '../types/app-settings';
+import {
+  resolveAnthropicMessagesEndpoint,
+  resolveEmbeddingEndpoint,
+  resolveGeminiGenerateContentEndpoint,
+  resolveOllamaChatEndpoint,
+  resolveOpenAIChatEndpoint,
+} from '../shared/api-endpoints';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
@@ -125,12 +133,7 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
     setProviderDropdownOpen(null);
   };
 
-  const handleTestProvider = async (id: string) => {
-    const provider = providers.find(p => p.id === id);
-    if (!provider) return;
-
-    handleProviderUpdate(id, 'status', 'testing');
-
+  const runProviderTest = async (provider: Provider): Promise<Pick<Provider, 'status' | 'errorMessage'>> => {
     try {
       let endpoint = provider.baseUrl;
       const headers: Record<string, string> = {
@@ -138,8 +141,21 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
       };
       let body: string | null = null;
 
-      if (provider.id === 'anthropic') {
-        endpoint += '/v1/messages';
+      if (provider.id === 'gemini') {
+        const model = provider.models.split(',')[0] || 'gemini-1.5-flash';
+        endpoint = resolveGeminiGenerateContentEndpoint(provider.baseUrl, model, provider.apiKey, provider.chatEndpoint);
+        body = JSON.stringify({
+          contents: [{ parts: [{ text: "hi" }] }]
+        });
+      } else if (provider.id === 'ollama') {
+        endpoint = resolveOllamaChatEndpoint(provider.baseUrl, provider.chatEndpoint);
+        body = JSON.stringify({
+          model: provider.models.split(',')[0] || 'llama3',
+          messages: [{ role: 'user', content: 'hi' }],
+          stream: false
+        });
+      } else if (provider.apiFormat === 'anthropic' || provider.id === 'anthropic' || provider.id === 'minimax' || provider.id === 'doubao') {
+        endpoint = resolveAnthropicMessagesEndpoint(provider.baseUrl, provider.chatEndpoint);
         headers['x-api-key'] = provider.apiKey;
         headers['anthropic-version'] = '2023-06-01';
         body = JSON.stringify({
@@ -147,22 +163,8 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
           max_tokens: 1,
           messages: [{ role: 'user', content: 'hi' }]
         });
-      } else if (provider.id === 'gemini') {
-        const model = provider.models.split(',')[0] || 'gemini-1.5-flash';
-        endpoint += `/models/${model}:generateContent?key=${provider.apiKey}`;
-        body = JSON.stringify({
-          contents: [{ parts: [{ text: "hi" }] }]
-        });
-      } else if (provider.id === 'ollama') {
-        endpoint = `${provider.baseUrl}/chat`;
-        body = JSON.stringify({
-          model: provider.models.split(',')[0] || 'llama3',
-          messages: [{ role: 'user', content: 'hi' }],
-          stream: false
-        });
       } else {
-        // Default: OpenAI compatible endpoint
-        endpoint = `${provider.baseUrl}/chat/completions`;
+        endpoint = resolveOpenAIChatEndpoint(provider.baseUrl, provider.chatEndpoint);
         headers['Authorization'] = `Bearer ${provider.apiKey}`;
         body = JSON.stringify({
           model: provider.models.split(',')[0] || 'gpt-3.5-turbo',
@@ -178,17 +180,32 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
       });
 
       if (res.ok) {
-        handleProviderUpdate(id, 'status', 'success');
-        handleProviderUpdate(id, 'errorMessage', '');
-      } else {
-        const errText = await res.text();
-        handleProviderUpdate(id, 'status', 'error');
-        handleProviderUpdate(id, 'errorMessage', `HTTP ${res.status}: ${errText.substring(0, 150)}`);
+        return { status: 'success', errorMessage: '' };
       }
+      const errText = await res.text();
+      return { status: 'error', errorMessage: `HTTP ${res.status}: ${errText.substring(0, 150)}` };
     } catch (err: unknown) {
-      handleProviderUpdate(id, 'status', 'error');
-      handleProviderUpdate(id, 'errorMessage', err instanceof Error ? err.message : '网络错误');
+      return { status: 'error', errorMessage: err instanceof Error ? err.message : '网络错误' };
     }
+  };
+
+  const applyProviderTestResult = (id: string, result: Pick<Provider, 'status' | 'errorMessage'>) => {
+    setProviders(prev => prev.map(p => (
+      p.id === id ? { ...p, status: result.status, errorMessage: result.errorMessage } : p
+    )));
+  };
+
+  const handleTestProvider = async (id: string) => {
+    const provider = providers.find(p => p.id === id);
+    if (!provider) return;
+
+    applyProviderTestResult(id, { status: 'testing', errorMessage: undefined });
+    const result = await runProviderTest(provider);
+    applyProviderTestResult(id, result);
+  };
+
+  const handleTestProviderDraft = async (provider: Provider): Promise<Pick<Provider, 'status' | 'errorMessage'>> => {
+    return runProviderTest(provider);
   };
 
   const handleSave = async () => {
@@ -231,16 +248,16 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
       let endpoint: string;
       let body: string;
 
-      if (provider.id === 'anthropic') {
-        endpoint = `${provider.baseUrl}/v1/messages`;
+      if (provider.id === 'gemini') {
+        endpoint = resolveGeminiGenerateContentEndpoint(provider.baseUrl, rm.model, provider.apiKey, provider.chatEndpoint);
+        body = JSON.stringify({ contents: [{ parts: [{ text: 'hi' }] }] });
+      } else if (provider.apiFormat === 'anthropic' || provider.id === 'anthropic' || provider.id === 'minimax' || provider.id === 'doubao') {
+        endpoint = resolveAnthropicMessagesEndpoint(provider.baseUrl, provider.chatEndpoint);
         headers['x-api-key'] = provider.apiKey;
         headers['anthropic-version'] = '2023-06-01';
         body = JSON.stringify({ model: rm.model, max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] });
-      } else if (provider.id === 'gemini') {
-        endpoint = `${provider.baseUrl}/models/${rm.model}:generateContent?key=${provider.apiKey}`;
-        body = JSON.stringify({ contents: [{ parts: [{ text: 'hi' }] }] });
       } else {
-        endpoint = `${provider.baseUrl}/chat/completions`;
+        endpoint = resolveOpenAIChatEndpoint(provider.baseUrl, provider.chatEndpoint);
         headers['Authorization'] = `Bearer ${provider.apiKey}`;
         body = JSON.stringify({ model: rm.model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 });
       }
@@ -286,22 +303,24 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
     }
 
     // Provider / Custom mode: test via fetch (remote API)
-    let baseUrl: string, apiKey: string;
+    let baseUrl: string, endpoint: string, apiKey: string;
     if (em.source === 'provider') {
       const provider = providers.find(p => p.id === em.providerId);
       if (!provider) return;
       baseUrl = provider.baseUrl;
+      endpoint = provider.embeddingEndpoint || '';
       apiKey = provider.apiKey;
     } else {
       baseUrl = em.customBaseUrl || '';
+      endpoint = em.customEmbeddingEndpoint || '';
       apiKey = em.customApiKey || '';
     }
 
-    if (!baseUrl) return;
+    if (!baseUrl && !endpoint) return;
 
     try {
-      const endpoint = `${baseUrl}/embeddings`;
-      const res = await fetch(endpoint, {
+      const resolvedEndpoint = resolveEmbeddingEndpoint(baseUrl, endpoint);
+      const res = await fetch(resolvedEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -408,13 +427,13 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="absolute inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-md animate-in fade-in duration-200 p-6">
-      <div className="w-full max-w-4xl h-full max-h-[680px] rounded-2xl shadow-2xl border border-white/10 bg-[var(--bg-base)]/95 flex flex-col overflow-hidden">
+      <div className="w-full max-w-4xl h-full max-h-[680px] rounded-2xl shadow-2xl border border-[var(--panel-border)] bg-[var(--panel-bg)] flex flex-col overflow-hidden">
 
         {/* Header */}
-        <div className="h-12 border-b border-white/10 flex items-center justify-between px-4 shrink-0 bg-black/30">
+        <div className="h-12 border-b border-[var(--panel-border)] flex items-center justify-between px-4 shrink-0">
           <div className="flex items-center gap-2">
-            <Server size={16} className="text-white/60" />
-            <h2 className="text-sm font-medium text-white">API 管理</h2>
+            <Server size={16} className="text-[var(--text-secondary)]" />
+            <h2 className="text-sm font-medium text-[var(--text-primary)]">API 管理</h2>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -422,14 +441,14 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
               className={`px-3 py-1 rounded-lg text-xs font-medium transition-all ${
                 isSaving
                   ? 'bg-green-500/20 text-green-400'
-                  : 'bg-white/10 text-white/80 hover:bg-white/20'
+                  : 'bg-[var(--surface-muted)] text-[var(--text-primary)] hover:bg-[var(--panel-border)]'
               }`}
             >
               {isSaving ? '✓ 已保存' : '保存'}
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 hover:bg-white/10 rounded-full text-white/60 hover:text-white transition-colors"
+              className="p-1.5 hover:bg-[var(--panel-border)] rounded-full text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors"
             >
               <X size={18} />
             </button>
@@ -445,13 +464,13 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
         />
 
         {/* Tabs */}
-        <div className="flex border-b border-white/10 shrink-0">
+        <div className="flex border-b border-[var(--panel-border)] shrink-0">
           <button
             onClick={() => setActiveTab('agents')}
             className={`flex items-center gap-2 px-5 py-2.5 text-xs font-medium transition-all border-b-2 ${
               activeTab === 'agents'
-                ? 'text-white border-white/60 bg-white/5'
-                : 'text-white/50 border-transparent hover:text-white/80'
+                ? 'text-[var(--text-primary)] border-[var(--accent)] bg-[var(--surface-muted)]'
+                : 'text-[var(--text-secondary)] border-transparent hover:text-[var(--text-primary)]'
             }`}
           >
             <Bot size={14} />
@@ -461,8 +480,8 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
             onClick={() => setActiveTab('providers')}
             className={`flex items-center gap-2 px-5 py-2.5 text-xs font-medium transition-all border-b-2 ${
               activeTab === 'providers'
-                ? 'text-white border-white/60 bg-white/5'
-                : 'text-white/50 border-transparent hover:text-white/80'
+                ? 'text-[var(--text-primary)] border-[var(--accent)] bg-[var(--surface-muted)]'
+                : 'text-[var(--text-secondary)] border-transparent hover:text-[var(--text-primary)]'
             }`}
           >
             <Server size={14} />
@@ -478,13 +497,13 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
               <div className="flex-1 overflow-y-auto p-6">
                 <div className="max-w-lg mx-auto">
                   {/* EasyTerminal Header Card */}
-                  <div className="flex items-center gap-4 p-4 rounded-xl bg-white/5 border border-white/10 mb-6">
-                    <div className="w-12 h-12 rounded-xl bg-black/30 flex items-center justify-center overflow-hidden">
+                  <div className="flex items-center gap-4 p-4 rounded-xl bg-[var(--surface-muted)] border border-[var(--panel-border)] mb-6">
+                    <div className="w-12 h-12 rounded-xl bg-[var(--panel-bg)] flex items-center justify-center overflow-hidden">
                       <img src="/icon.png" alt="EasyTerminal" className="w-10 h-10 rounded-lg" />
                     </div>
                     <div>
-                      <h3 className="text-base font-medium text-white">EasyTerminal</h3>
-                      <p className="text-xs text-white/50">EasyTerminal 自身的 API 配置</p>
+                      <h3 className="text-base font-medium text-[var(--text-primary)]">EasyTerminal</h3>
+                      <p className="text-xs text-[var(--text-secondary)]">EasyTerminal 自身的 API 配置</p>
                     </div>
                   </div>
 
@@ -515,13 +534,13 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
               {activeAgent ? (
                 <div className="max-w-lg mx-auto">
                   {/* Agent Header Card */}
-                  <div className="flex items-center gap-4 p-4 rounded-xl bg-white/5 border border-white/10 mb-6">
-                    <div className="w-12 h-12 rounded-xl bg-black/30 flex items-center justify-center">
+                  <div className="flex items-center gap-4 p-4 rounded-xl bg-[var(--surface-muted)] border border-[var(--panel-border)] mb-6">
+                    <div className="w-12 h-12 rounded-xl bg-[var(--panel-bg)] flex items-center justify-center">
                       <ProviderIcon name={activeAgent.icon} size={32} />
                     </div>
                     <div>
-                      <h3 className="text-base font-medium text-white">{activeAgent.name}</h3>
-                      <p className="text-xs text-white/50">{activeAgent.description}</p>
+                      <h3 className="text-base font-medium text-[var(--text-primary)]">{activeAgent.name}</h3>
+                      <p className="text-xs text-[var(--text-secondary)]">{activeAgent.description}</p>
                     </div>
                     <div className={`ml-auto w-2 h-2 rounded-full ${getStatusColor(activeProvider?.status || 'unknown')}`} />
                   </div>
@@ -529,36 +548,36 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                   <div className="space-y-5">
                     {/* Provider Selection */}
                     <div>
-                      <label className="block text-xs font-medium text-white/60 mb-2 flex items-center gap-1.5">
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-2 flex items-center gap-1.5">
                         <Zap size={12} className="text-yellow-400/70" />
                         选择模型
                       </label>
                       <div className="relative">
                         <button
                           onClick={() => setProviderDropdownOpen(providerDropdownOpen === activeAgent.id ? null : activeAgent.id)}
-                          className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-black/40 border border-white/10 text-white hover:border-white/20 transition-colors"
+                          className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-[var(--panel-bg)] border border-[var(--panel-border)] text-[var(--text-primary)] hover:border-[var(--accent)]/50 transition-colors"
                         >
                           <div className="flex items-center gap-3">
                             <ProviderIcon name={activeAgent.providerId} size={24} />
                             <span>{providers.find(p => p.id === activeAgent.providerId)?.name || '选择厂商'}</span>
                           </div>
-                          <ChevronDown size={16} className={`text-white/40 transition-transform ${providerDropdownOpen === activeAgent.id ? 'rotate-180' : ''}`} />
+                          <ChevronDown size={16} className={`text-[var(--text-secondary)] transition-transform ${providerDropdownOpen === activeAgent.id ? 'rotate-180' : ''}`} />
                         </button>
 
                         {providerDropdownOpen === activeAgent.id && (
-                          <div className="absolute z-10 mt-2 w-full rounded-xl bg-[var(--bg-base)] border border-white/10 shadow-xl overflow-hidden">
+                          <div className="absolute z-10 mt-2 w-full rounded-xl bg-[var(--panel-bg)] border border-[var(--panel-border)] shadow-xl overflow-hidden">
                             {providers.map(p => (
                               <button
                                 key={p.id}
                                 onClick={() => handleAgentProviderChange(activeAgent.id, p.id)}
-                                className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-white/5 transition-colors ${
-                                  activeAgent.providerId === p.id ? 'bg-white/5' : ''
+                                className={`w-full flex items-center gap-3 px-4 py-3 hover:bg-[var(--surface-muted)] transition-colors ${
+                                  activeAgent.providerId === p.id ? 'bg-[var(--surface-muted)]' : ''
                                 }`}
                               >
                                 <ProviderIcon name={p.icon} size={24} />
                                 <div className="text-left flex-1">
-                                  <div className="text-sm text-white">{p.name}</div>
-                                  <div className="text-[10px] text-white/40">{p.description}</div>
+                                  <div className="text-sm text-[var(--text-primary)]">{p.name}</div>
+                                  <div className="text-[10px] text-[var(--text-secondary)]">{p.description}</div>
                                 </div>
                                 {activeAgent.providerId === p.id && (
                                   <Check size={14} className="text-green-400" />
@@ -572,20 +591,20 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
 
                     {/* Model Selection */}
                     <div>
-                      <label className="block text-xs font-medium text-white/60 mb-2">
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-2">
                         模型
                       </label>
                       <div className="relative">
                         <button
                           onClick={() => setProviderDropdownOpen(providerDropdownOpen === 'model' ? null : 'model')}
-                          className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-black/40 border border-white/10 text-white hover:border-white/20 transition-colors"
+                          className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-[var(--panel-bg)] border border-[var(--panel-border)] text-[var(--text-primary)] hover:border-[var(--accent)]/50 transition-colors"
                         >
                           <span>{activeAgent.models || '选择模型'}</span>
-                          <ChevronDown size={16} className={`text-white/40 transition-transform ${providerDropdownOpen === 'model' ? 'rotate-180' : ''}`} />
+                          <ChevronDown size={16} className={`text-[var(--text-secondary)] transition-transform ${providerDropdownOpen === 'model' ? 'rotate-180' : ''}`} />
                         </button>
 
                         {providerDropdownOpen === 'model' && (
-                          <div className="absolute z-10 mt-2 w-full rounded-xl bg-[var(--bg-base)] border border-white/10 shadow-xl overflow-hidden max-h-60 overflow-y-auto">
+                          <div className="absolute z-10 mt-2 w-full rounded-xl bg-[var(--panel-bg)] border border-[var(--panel-border)] shadow-xl overflow-hidden max-h-60 overflow-y-auto">
                             {providers.find(p => p.id === activeAgent.providerId)?.models.split(',').map(model => (
                               <button
                                 key={model.trim()}
@@ -593,11 +612,11 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                                   handleAgentUpdate(activeAgent.id, 'models', model.trim());
                                   setProviderDropdownOpen(null);
                                 }}
-                                className={`w-full flex items-center px-4 py-3 hover:bg-white/5 transition-colors ${
-                                  activeAgent.models === model.trim() ? 'bg-white/5' : ''
+                                className={`w-full flex items-center px-4 py-3 hover:bg-[var(--surface-muted)] transition-colors ${
+                                  activeAgent.models === model.trim() ? 'bg-[var(--surface-muted)]' : ''
                                 }`}
                               >
-                                <span className={`text-sm ${activeAgent.models === model.trim() ? 'text-white' : 'text-white/70'}`}>{model.trim()}</span>
+                                <span className={`text-sm ${activeAgent.models === model.trim() ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>{model.trim()}</span>
                                 {activeAgent.models === model.trim() && (
                                   <Check size={14} className="ml-auto text-green-400" />
                                 )}
@@ -610,10 +629,10 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
 
                     {/* Provider Status Card */}
                     {activeProvider && (
-                      <div className="p-4 rounded-xl bg-white/5 border border-white/10">
+                      <div className="p-4 rounded-xl bg-[var(--surface-muted)] border border-[var(--panel-border)]">
                         <div className="flex items-center gap-2 mb-2">
                           <ProviderIcon name={activeProvider.icon} size={18} />
-                          <span className="text-sm font-medium text-white/80">{activeProvider.name}</span>
+                          <span className="text-sm font-medium text-[var(--text-primary)]">{activeProvider.name}</span>
                           <span className={`ml-auto text-[10px] px-2 py-0.5 rounded-full ${
                             activeProvider.status === 'success'
                               ? 'bg-green-500/20 text-green-400'
@@ -621,10 +640,14 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                                 ? 'bg-red-500/20 text-red-400'
                                 : 'bg-gray-500/20 text-gray-400'
                           }`}>
-                            {activeProvider.status === 'success' ? '可用' : activeProvider.status === 'error' ? '错误' : '未测试'}
+                            {activeProvider.status === 'success'
+                              ? CONNECTION_STATUS_LABELS.success
+                              : activeProvider.status === 'error'
+                                ? CONNECTION_STATUS_LABELS.error
+                                : CONNECTION_STATUS_LABELS.unknown}
                           </span>
                         </div>
-                        <p className="text-[10px] text-white/40">
+                        <p className="text-[10px] text-[var(--text-secondary)]">
                           API 配置在「模型供应商」标签页中管理
                         </p>
                       </div>
@@ -632,7 +655,7 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
 
                     {/* Proxy Toggle */}
                     <div>
-                      <label className="block text-xs font-medium text-white/60 mb-2">
+                      <label className="block text-xs font-medium text-[var(--text-secondary)] mb-2">
                         代理接管
                       </label>
                       <ProxyToggle
@@ -644,7 +667,7 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center justify-center h-full text-white/40">
+                <div className="flex items-center justify-center h-full text-[var(--text-secondary)]">
                   <p>选择一个 App 进行配置</p>
                 </div>
               )}
@@ -654,7 +677,7 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
             /* Providers Panel */
             <div className="flex-1 flex overflow-hidden">
               {/* Provider List */}
-              <div className="w-72 border-r border-white/10 bg-black/20">
+              <div className="w-72 border-r border-[var(--panel-border)] bg-[var(--surface-muted)]">
                 <ProviderList
                   providers={providers}
                   activeProviderId={activeProviderId}
@@ -670,18 +693,18 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                 {selectedProvider ? (
                   <div className="max-w-lg mx-auto">
                     {/* Provider Header */}
-                    <div className="flex items-center gap-4 p-4 rounded-xl bg-white/5 border border-white/10 mb-6">
-                      <div className="w-14 h-14 rounded-xl bg-black/30 flex items-center justify-center">
+                    <div className="flex items-center gap-4 p-4 rounded-xl bg-[var(--surface-muted)] border border-[var(--panel-border)] mb-6">
+                      <div className="w-14 h-14 rounded-xl bg-[var(--panel-bg)] flex items-center justify-center">
                         <ProviderIcon name={selectedProvider.icon} size={40} />
                       </div>
                       <div className="flex-1">
-                        <h3 className="text-base font-medium text-white">{selectedProvider.name}</h3>
-                        <p className="text-xs text-white/40">{selectedProvider.description}</p>
+                        <h3 className="text-base font-medium text-[var(--text-primary)]">{selectedProvider.name}</h3>
+                        <p className="text-xs text-[var(--text-secondary)]">{selectedProvider.description}</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <button
                           onClick={() => handleEditProvider(selectedProvider)}
-                          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-white/10 text-white/80 hover:bg-white/20 transition-all"
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-[var(--surface-muted)] text-[var(--text-primary)] hover:bg-[var(--panel-border)] transition-all"
                         >
                           编辑
                         </button>
@@ -693,13 +716,21 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                               ? 'bg-gray-500/10 text-gray-500 cursor-not-allowed'
                               : selectedProvider.status === 'testing'
                                 ? 'bg-yellow-500/10 text-yellow-400'
-                                : 'bg-green-500/10 text-green-400 hover:bg-green-500/20'
+                                : selectedProvider.status === 'success'
+                                  ? 'bg-green-500/10 text-green-400 hover:bg-green-500/20'
+                                  : selectedProvider.status === 'error'
+                                    ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20'
+                                    : 'bg-[var(--surface-muted)] text-[var(--text-primary)] hover:bg-[var(--panel-border)]'
                           }`}
                         >
                           {selectedProvider.status === 'testing' ? (
-                            <><RefreshCw size={12} className="animate-spin" /> 测试中...</>
+                            <><RefreshCw size={12} className="animate-spin" /> {CONNECTION_TEST_BUTTON_LABELS.testing}</>
+                          ) : selectedProvider.status === 'success' ? (
+                            <><Check size={12} /> {CONNECTION_TEST_BUTTON_LABELS.success}</>
+                          ) : selectedProvider.status === 'error' ? (
+                            <><X size={12} /> {CONNECTION_TEST_BUTTON_LABELS.error}</>
                           ) : (
-                            <><Check size={12} /> 测试</>
+                            <><RefreshCw size={12} /> {CONNECTION_TEST_BUTTON_LABELS.unknown}</>
                           )}
                         </button>
                       </div>
@@ -714,19 +745,19 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
 
                     <div className="space-y-4">
                       <div>
-                        <label className="block text-xs font-medium text-white/60 mb-1.5">
+                        <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                           API 地址
                         </label>
                         <input
                           type="text"
                           value={selectedProvider.baseUrl}
                           onChange={(e) => handleProviderUpdate(selectedProvider.id, 'baseUrl', e.target.value)}
-                          className="w-full px-4 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm font-mono focus:border-white/20 focus:outline-none transition-colors"
+                          className="w-full px-4 py-2.5 rounded-xl bg-[var(--panel-bg)] border border-[var(--panel-border)] text-[var(--text-primary)] text-sm font-mono focus:border-[var(--accent)]/50 focus:outline-none transition-colors"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-xs font-medium text-white/60 mb-1.5 flex items-center gap-1">
+                        <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5 flex items-center gap-1">
                           <KeyRound size={12} />
                           API Key
                         </label>
@@ -734,22 +765,22 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                           type="password"
                           value={selectedProvider.apiKey}
                           onChange={(e) => handleProviderUpdate(selectedProvider.id, 'apiKey', e.target.value)}
-                          className="w-full px-4 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm font-mono focus:border-white/20 focus:outline-none transition-colors"
+                          className="w-full px-4 py-2.5 rounded-xl bg-[var(--panel-bg)] border border-[var(--panel-border)] text-[var(--text-primary)] text-sm font-mono focus:border-[var(--accent)]/50 focus:outline-none transition-colors"
                           placeholder="sk-..."
                         />
                       </div>
 
                       <div>
-                        <label className="block text-xs font-medium text-white/60 mb-1.5">
+                        <label className="block text-xs font-medium text-[var(--text-secondary)] mb-1.5">
                           模型列表
                         </label>
                         <input
                           type="text"
                           value={selectedProvider.models}
                           onChange={(e) => handleProviderUpdate(selectedProvider.id, 'models', e.target.value)}
-                          className="w-full px-4 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm font-mono focus:border-white/20 focus:outline-none transition-colors"
+                          className="w-full px-4 py-2.5 rounded-xl bg-[var(--panel-bg)] border border-[var(--panel-border)] text-[var(--text-primary)] text-sm font-mono focus:border-[var(--accent)]/50 focus:outline-none transition-colors"
                         />
-                        <p className="mt-1 text-[10px] text-white/40">
+                        <p className="mt-1 text-[10px] text-[var(--text-secondary)]">
                           多个模型用逗号分隔
                         </p>
                       </div>
@@ -757,7 +788,7 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                     </div>
                   </div>
                 ) : (
-                  <div className="flex items-center justify-center h-full text-white/40">
+                  <div className="flex items-center justify-center h-full text-[var(--text-secondary)]">
                     <p>选择一个供应商进行编辑</p>
                   </div>
                 )}
@@ -773,7 +804,7 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
         isOpen={showProviderDialog}
         onClose={() => setShowProviderDialog(false)}
         onSave={handleProviderSave}
-        onTest={handleTestProvider}
+        onTest={handleTestProviderDraft}
       />
     </div>
   );

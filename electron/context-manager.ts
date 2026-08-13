@@ -5,6 +5,7 @@ import { app } from 'electron';
 
 import { NLPService } from './nlp-service';
 import { PrivacyFilter } from './privacy-filter';
+import * as contextStore from './services/context-store';
 
 // Extremely basic robust ANSI stripper
 function stripAnsi(str: string): string {
@@ -85,6 +86,12 @@ tags: ["terminal-session"]
     try {
       fs.writeFileSync(filePath, initialContent, 'utf-8');
       stream = fs.createWriteStream(filePath, { flags: 'a', encoding: 'utf-8' });
+      contextStore.appendSessionEvent({
+        session_id: sessionId,
+        event_type: 'session_start',
+        payload: JSON.stringify({ title: sessionName, filePath }),
+        token_estimate: 0,
+      });
     } catch (e) {
       console.error('[ContextManager] Failed to initialize session stream', e);
       // Return a dummy logger if file creation fails
@@ -145,6 +152,32 @@ tags: ["terminal-session"]
                 fs.writeFileSync(filePath, updatedContent, 'utf-8');
                 console.log(`[ContextManager] Added TF-IDF tags to session: ${keywords.join(', ')}`);
               }
+
+              const previewSource = contentToAnalyze
+                .replace(/```[\s\S]*?```/g, '')
+                .replace(/^#+\s+/gm, '')
+                .replace(/\s+/g, ' ')
+                .trim();
+              const summary = previewSource.slice(0, 240) || 'Session completed';
+
+              contextStore.createRecord({
+                scope: 'session',
+                kind: 'summary',
+                title: `Session ${sessionName}`,
+                summary,
+                details: filePath,
+                salience: 0.7,
+                status: 'active',
+                source_type: 'session',
+                source_ref: filePath,
+                evidence_refs: [filePath],
+              });
+              contextStore.appendSessionEvent({
+                session_id: sessionId,
+                event_type: 'session_end',
+                payload: JSON.stringify({ filePath, keywords, summary }),
+                token_estimate: 0,
+              });
             } catch (e) {
               console.error('[ContextManager] Failed to run TF-IDF tag extraction', e);
             }
@@ -245,6 +278,19 @@ tags: ${tagsStr}
         fs.writeFileSync(filePath, frontmatter + appendBlock, 'utf-8');
         console.log(`[ContextManager] Created new daily snippet file: ${fileName}`);
       }
+
+      contextStore.createRecord({
+        scope: 'project',
+        kind: 'artifact',
+        title: `Snippet ${source}`,
+        summary: content.trim().slice(0, 240),
+        details: filePath,
+        salience: isSensitive ? 0.9 : 0.5,
+        status: 'active',
+        source_type: 'manual',
+        source_ref: filePath,
+        evidence_refs: [filePath],
+      });
 
       return { filePath, isSensitive };
     } catch (e) {

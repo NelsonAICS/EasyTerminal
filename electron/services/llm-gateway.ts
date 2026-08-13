@@ -1,5 +1,9 @@
 // LLM Gateway — Unified multi-vendor LLM API calling layer
 // Supports: Anthropic, OpenAI (compatible), Gemini, Ollama
+import {
+  resolveAnthropicMessagesEndpoint,
+  resolveOpenAIChatEndpoint,
+} from '../../src/shared/api-endpoints';
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
@@ -33,6 +37,7 @@ export interface LLMResponse {
 export interface LLMConfig {
   provider: string;       // 'anthropic' | 'openai' | 'gemini' | 'ollama' | provider id
   baseUrl: string;
+  chatEndpoint?: string;
   apiKey: string;
   model: string;
   apiFormat?: 'anthropic' | 'openai_chat' | 'openai_responses';
@@ -75,7 +80,7 @@ async function callAnthropic(
   tools?: LLMTool[],
   systemPrompt?: string,
 ): Promise<LLMResponse> {
-  const url = `${config.baseUrl}/v1/messages`;
+  const url = resolveAnthropicMessagesEndpoint(config.baseUrl, config.chatEndpoint);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-api-key': config.apiKey,
@@ -166,7 +171,7 @@ async function callOpenAI(
   tools?: LLMTool[],
   systemPrompt?: string,
 ): Promise<LLMResponse> {
-  const url = `${config.baseUrl}/chat/completions`;
+  const url = resolveOpenAIChatEndpoint(config.baseUrl, config.chatEndpoint);
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };

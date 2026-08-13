@@ -1,28 +1,47 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Send, X, Save, Sparkles, TerminalSquare, Plus, Settings2, Command, HelpCircle, Download, Eye, Edit3, Globe, PanelRightClose, PanelRightOpen, MousePointer2, ZoomIn, ZoomOut, Database, Server, FileText, Box, Workflow, Component } from 'lucide-react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { Send, X, Save, Sparkles, TerminalSquare, Plus, Settings2, Command, HelpCircle, Download, Eye, Edit3, Globe, PanelRightClose, PanelRightOpen, MousePointer2, ZoomIn, ZoomOut, Archive, Server, FileText, Box, Workflow, Layout, Cpu, BookOpen, Loader2 } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import 'github-markdown-css/github-markdown.css'
 import TerminalView from './TerminalView'
-import { ApiManager } from './components/ApiManager'
 import { PromptPanel } from './components/PromptPanel'
 import { SkillPanel } from './components/SkillPanel'
 import { KnowledgePanel } from './components/KnowledgePanel'
-import { AgentMigrationPanel } from './components/AgentMigrationPanel'
-import { ContextVaultPanel } from './components/ContextVaultPanel'
-import { WorkflowPanel } from './components/WorkflowPanel'
 import { FileExplorerPanel } from './components/FileExplorerPanel'
 import { UIShowcasePanel } from './components/UIShowcasePanel'
-import { CommandManualModal, type QuickTool } from './components/CommandManualModal'
-import { UIModal } from './components/ui'
+import { BrowserPanel } from './components/BrowserPanel'
+import { UIIntentRenderer } from './components/UIIntentRenderer'
+import { UIButton, UIInput, UIModal } from './components/ui'
 import { searchManualCommandSuggestions } from './data/commandManual'
+import { TERMINAL_AGENT_COPY } from './lib/ui-copy'
 import { getThemePreset, THEME_PRESETS } from './lib/themes'
-import { type FileEntry } from './types/agent-extension'
+import { type FileEntry, type UIIntent } from './types/agent-extension'
+import type { QuickTool } from './components/CommandManualModal'
+
+// Lazy-load heavy panel components for faster initial render
+const ApiManager = React.lazy(() => import('./components/ApiManager').then(m => ({ default: m.ApiManager })))
+const ContextVaultPanel = React.lazy(() => import('./components/ContextVaultPanel').then(m => ({ default: m.ContextVaultPanel })))
+const WorkflowPanel = React.lazy(() => import('./components/WorkflowPanel').then(m => ({ default: m.WorkflowPanel })))
+const AgentMigrationPanel = React.lazy(() => import('./components/AgentMigrationPanel').then(m => ({ default: m.AgentMigrationPanel })))
+const CommandManualModal = React.lazy(() => import('./components/CommandManualModal').then(m => ({ default: m.CommandManualModal })))
+const CapabilityPanel = React.lazy(() => import('./components/CapabilityPanel').then(m => ({ default: m.CapabilityPanel })))
+
+// Fallback spinner for lazy-loaded components
+const PanelLoader = () => (
+  <div className="w-full h-full flex items-center justify-center">
+    <Loader2 size={24} className="text-[var(--accent)] animate-spin" />
+  </div>
+)
 
 declare global {
   interface Window {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     require?: any;
+    electronAPI?: {
+      storeGet: (key: string, defaultValue?: unknown) => Promise<unknown>
+      storeSet: (key: string, value: unknown) => Promise<boolean>
+      storeDelete: (key: string) => Promise<boolean>
+    }
   }
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace JSX {
@@ -63,6 +82,18 @@ interface PendingImagePreview {
   height?: number
 }
 
+interface TerminalAgentCommandSuggestion {
+  command: string
+  summary: string
+}
+
+interface RecentTerminalAgentCommand {
+  id: string
+  command: string
+  summary: string
+  usedAt: string
+}
+
 const DEFAULT_TOOLS: QuickTool[] = [
   { name: 'claude', cmd: 'claude' },
   { name: 'openclaw', cmd: 'openclaw' },
@@ -73,15 +104,168 @@ const DEFAULT_TOOLS: QuickTool[] = [
   { name: 'git status', cmd: 'git status' },
 ]
 
+const TERMINAL_AGENT_HELP = `${TERMINAL_AGENT_COPY.helpTitle}
+
+/agent <task>
+  让内建 Agent 自主决定如何调用 prompt、skill、workflow、context 和 knowledge 能力。
+
+/skill <query>
+/skill get <skillId>
+  搜索已收录的 Skill，或根据 id 查看某个 Skill。
+
+/prompt <query>
+/prompt search <query>
+/prompt optimize <draft>
+/prompt render <promptId> {"var":"value"}
+  搜索已保存的 Prompt，优化 Prompt 草稿，或渲染 Prompt 模板。
+
+/workflow <query>
+/workflow search <query>
+/workflow get <workflowId>
+/workflow run <workflowId> {"input":"value"}
+  搜索 Workflow、查看 Workflow 定义，或用 JSON 变量执行 Workflow。
+
+/context list
+/context records [query]
+/context snapshots
+/context events
+/context capture <text>
+  浏览上下文资产、查看结构化记录与快照、查看当前会话事件，或把内容写入 Context Vault。
+
+/help agent
+  打开应用内命令手册，并自动定位到终端 Agent 教程。`
+
+const TERMINAL_AGENT_COMMANDS: TerminalAgentCommandSuggestion[] = [
+  { command: '/agent ', summary: '让内建 Agent 自主调用 prompt / skill / workflow / context 能力' },
+  { command: '/skill ', summary: '搜索 Skill' },
+  { command: '/skill get ', summary: '根据 id 查看一个 Skill' },
+  { command: '/prompt ', summary: '搜索 Prompt' },
+  { command: '/prompt optimize ', summary: '优化 Prompt 草稿' },
+  { command: '/prompt render ', summary: '渲染 Prompt 模板，后接 promptId 和 JSON 变量' },
+  { command: '/workflow ', summary: '搜索 Workflow' },
+  { command: '/workflow get ', summary: '查看 Workflow 定义' },
+  { command: '/workflow run ', summary: '执行 Workflow，后接 workflowId 和 JSON 变量' },
+  { command: '/context list', summary: '查看 Context Vault 资产' },
+  { command: '/context records ', summary: '查看结构化记录，可追加查询词' },
+  { command: '/context snapshots', summary: '查看上下文快照' },
+  { command: '/context events', summary: '查看当前终端会话事件' },
+  { command: '/context capture ', summary: '把内容写入 Context Vault' },
+  { command: '/help agent', summary: '打开终端 Agent 教程' },
+  { command: '/et help', summary: '打开 EasyTerminal 命令手册' },
+]
+
+function truncateTerminalOutput(value: string, maxLength = 12000) {
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, maxLength)}\n... [内容已截断]`
+}
+
+function clampInlineText(value: string, maxLength = 120) {
+  const normalized = value.replace(/\s+/g, ' ').trim()
+  if (normalized.length <= maxLength) return normalized
+  return `${normalized.slice(0, maxLength - 1)}…`
+}
+
+function safeParseJsonObject(raw: string) {
+  const trimmed = raw.trim()
+  if (!trimmed) return {}
+  return JSON.parse(trimmed) as Record<string, unknown>
+}
+
+function formatTerminalValue(value: unknown) {
+  if (value === null || value === undefined) return TERMINAL_AGENT_COPY.emptyValue
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]'
+    const lines = value.slice(0, 8).map((item, index) => {
+      if (item && typeof item === 'object') {
+        const entry = item as Record<string, unknown>
+        const title = String(entry.title || entry.name || entry.id || `item_${index + 1}`)
+        const detail = clampInlineText(String(entry.summary || entry.description || entry.kind || '').trim(), 140)
+        return `${index + 1}. ${title}${detail ? `\n   ${detail}` : ''}`
+      }
+      return `${index + 1}. ${clampInlineText(String(item), 140)}`
+    })
+    if (value.length > 8) lines.push(`... ${value.length - 8} more item(s)`)
+    return truncateTerminalOutput(lines.join('\n'))
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    if (Array.isArray(record.sessions) || Array.isArray(record.snippets) || Array.isArray(record.projects)) {
+      const sections = [
+        `会话数：${Array.isArray(record.sessions) ? record.sessions.length : 0}`,
+        `片段数：${Array.isArray(record.snippets) ? record.snippets.length : 0}`,
+        `项目数：${Array.isArray(record.projects) ? record.projects.length : 0}`,
+      ]
+      return truncateTerminalOutput(sections.join('\n'))
+    }
+    const preferredEntries = ['title', 'summary', 'description', 'id', 'status', 'kind']
+      .map(key => [key, record[key]] as const)
+      .filter(([, fieldValue]) => typeof fieldValue === 'string' && String(fieldValue).trim())
+      .slice(0, 4)
+
+    if (preferredEntries.length > 0) {
+      return truncateTerminalOutput(
+        preferredEntries
+          .map(([key, fieldValue]) => `${key}: ${clampInlineText(String(fieldValue), 180)}`)
+          .join('\n')
+      )
+    }
+  }
+  if (typeof value === 'string') return truncateTerminalOutput(value)
+  try {
+    return truncateTerminalOutput(JSON.stringify(value, null, 2))
+  } catch {
+    return String(value)
+  }
+}
+
+function formatCapabilityTerminalResult(label: string, result: { success?: boolean; error?: string; data?: unknown }) {
+  if (!result?.success) {
+    return {
+      tone: 'error' as const,
+      body: `${TERMINAL_AGENT_COPY.capabilityFailed(label)}\n${result?.error || TERMINAL_AGENT_COPY.unknownError}`,
+    }
+  }
+
+  return {
+    tone: 'success' as const,
+    body: `${TERMINAL_AGENT_COPY.capabilityCompleted(label)}\n\n${formatTerminalValue(result.data)}`,
+  }
+}
+
+function formatAgentTerminalResult(result: {
+  answer?: string;
+  steps?: Array<{ type: string; tool?: string }>;
+  iterations?: number;
+  availableTools?: string[];
+}) {
+  const usedTools = Array.from(new Set(
+    (result.steps || [])
+      .filter(step => step.type === 'action' && step.tool)
+      .map(step => step.tool as string)
+  ))
+
+  const parts = [
+    result.answer?.trim() || TERMINAL_AGENT_COPY.noAnswer,
+    usedTools.length ? `已用能力：${usedTools.join(', ')}` : '',
+    typeof result.iterations === 'number' ? `迭代次数：${result.iterations}` : '',
+  ].filter(Boolean)
+
+  return truncateTerminalOutput(parts.join('\n\n'))
+}
+
 function App() {
   const mainAreaRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const webviewRef = useRef<any>(null)
   const panelDragRef = useRef<{ type: 'workspace' | 'explorer'; pointerId: number } | null>(null)
+  const terminalAgentCommandRunnerRef = useRef<((command: string) => Promise<void>) | null>(null)
+  const autocompleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [theme, setTheme] = useState('obsidian')
   const [fontSize, setFontSize] = useState(14)
   const [showSettings, setShowSettings] = useState(false)
+  const [autoCaptureTerminal, setAutoCaptureTerminal] = useState(false)
+  const [autoAnalyzeContext, setAutoAnalyzeContext] = useState(false)
   const [showHelp, setShowHelp] = useState(false)
   const [manualInitialSearch, setManualInitialSearch] = useState('')
   const [showApiManager, setShowApiManager] = useState(false)
@@ -96,15 +280,15 @@ function App() {
     { id: 'tab_1', name: 'Main', agentId: 'agent_1' }
   ])
   const [activeSessionId, setActiveSessionId] = useState('tab_1')
-  
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null)
-  const [editSessionName, setEditSessionName] = useState('')
+  const [editingSessionName, setEditingSessionName] = useState('')
 
   const [input, setInput] = useState('')
   const [suggestions, setSuggestions] = useState<InputSuggestion[]>([])
   const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(-1)
   const [isInputComposing, setIsInputComposing] = useState(false)
   const [pendingImages, setPendingImages] = useState<PendingImagePreview[]>([])
+  const [recentTerminalAgentCommands, setRecentTerminalAgentCommands] = useState<RecentTerminalAgentCommand[]>([])
 
   const [editorFile, setEditorFile] = useState<string | null>(null)
   const [editorContent, setEditorContent] = useState<string>('')
@@ -112,7 +296,9 @@ function App() {
   const [saveStatus, setSaveStatus] = useState<string | null>(null)
   const [previewImage, setPreviewImage] = useState<{file: string, src: string} | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
-  const [agentPanel, setAgentPanel] = useState<'context' | 'prompts' | 'skills' | 'knowledge' | 'migration' | 'ui' | null>(null)
+  const [agentPanel, setAgentPanel] = useState<'context' | 'prompts' | 'skills' | 'knowledge' | 'migration' | 'ui' | 'capabilities' | 'browser' | null>(null)
+  const [uiIntent, setUiIntent] = useState<UIIntent | null>(null)
+  const [streamingIntentId, setStreamingIntentId] = useState<string | null>(null)
   const [showWorkflowStudio, setShowWorkflowStudio] = useState(false)
   const [workspaceWidth, setWorkspaceWidth] = useState(760)
   const [explorerWidth, setExplorerWidth] = useState(460)
@@ -122,6 +308,7 @@ function App() {
   const [webviewPreloadPath, setWebviewPreloadPath] = useState<string>('')
   const [webviewZoom, setWebviewZoom] = useState<number>(1)
   const [analytics, setAnalytics] = useState<{cost?: number, tokens?: number}>({cost: 0, tokens: 0})
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const workspaceWidthRef = useRef(workspaceWidth)
   const explorerWidthRef = useRef(explorerWidth)
 
@@ -160,8 +347,45 @@ function App() {
 
   useEffect(() => {
     if (!ipcRenderer) return
+
+    ipcRenderer.invoke('ui:intent:get-current').then((intent: UIIntent | null) => {
+      setUiIntent(intent || null)
+    }).catch(() => undefined)
+
+    const handleIntentUpdated = (_event: unknown, nextIntent: UIIntent | null) => {
+      setUiIntent(nextIntent || null)
+    }
+
+    ipcRenderer.on('ui:intent:updated', handleIntentUpdated)
+    return () => {
+      ipcRenderer.removeListener('ui:intent:updated', handleIntentUpdated)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
     ipcRenderer.invoke('store:set', 'ui_font_size', fontSize).catch(() => undefined)
   }, [fontSize])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    ipcRenderer.invoke('store:get', 'context:autoCaptureTerminal', false).then((val: unknown) => {
+      if (typeof val === 'boolean') setAutoCaptureTerminal(val)
+    }).catch(() => undefined)
+    ipcRenderer.invoke('store:get', 'context:autoAnalyzeContext', false).then((val: unknown) => {
+      if (typeof val === 'boolean') setAutoAnalyzeContext(val)
+    }).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    ipcRenderer.invoke('store:set', 'context:autoCaptureTerminal', autoCaptureTerminal).catch(() => undefined)
+  }, [autoCaptureTerminal])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    ipcRenderer.invoke('store:set', 'context:autoAnalyzeContext', autoAnalyzeContext).catch(() => undefined)
+  }, [autoAnalyzeContext])
 
   useEffect(() => {
     if (!ipcRenderer) return
@@ -191,6 +415,30 @@ function App() {
     if (!ipcRenderer || !quickToolsLoaded) return
     ipcRenderer.invoke('store:set', 'quick_tools', quickTools).catch(() => undefined)
   }, [quickTools, quickToolsLoaded])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    ipcRenderer
+      .invoke('store:get', 'terminal_agent_recent_commands', [])
+      .then((storedCommands: unknown) => {
+        if (!Array.isArray(storedCommands)) return
+        const normalized = storedCommands.filter((item): item is RecentTerminalAgentCommand => {
+          return !!item &&
+            typeof item === 'object' &&
+            typeof (item as RecentTerminalAgentCommand).id === 'string' &&
+            typeof (item as RecentTerminalAgentCommand).command === 'string' &&
+            typeof (item as RecentTerminalAgentCommand).summary === 'string' &&
+            typeof (item as RecentTerminalAgentCommand).usedAt === 'string'
+        })
+        setRecentTerminalAgentCommands(normalized.slice(0, 8))
+      })
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    ipcRenderer.invoke('store:set', 'terminal_agent_recent_commands', recentTerminalAgentCommands).catch(() => undefined)
+  }, [recentTerminalAgentCommands])
 
   // Handle window resizing based on preview state
   useEffect(() => {
@@ -233,12 +481,26 @@ function App() {
     setPreviewImage(null)
   }, [])
 
-  const openAgentPanel = useCallback((panel: NonNullable<typeof agentPanel>) => {
-    setShowWorkflowStudio(false)
-    setEditorFile(null)
-    setPreviewImage(null)
-    setAgentPanel(current => (current === panel ? null : panel))
+  const closeUiIntent = useCallback(() => {
+    setUiIntent(null)
+    ipcRenderer?.invoke('ui:intent:clear').catch(() => undefined)
   }, [])
+
+  const handleUiIntentAction = useCallback((actionId: string) => {
+    const actionData = (uiIntent?.payload?.actionData || {}) as Record<string, unknown>
+
+    if (actionId === 'insert-input' && typeof actionData.resultText === 'string') {
+      const resultText = actionData.resultText
+      setInput(prev => prev.trim() ? `${prev}\n\n${resultText}` : resultText)
+      focusInputBox()
+    } else if (actionId === 'save-result-context' && typeof actionData.resultText === 'string') {
+      ipcRenderer?.invoke('context:save-snippet', actionData.resultText, 'TerminalAgentResult').catch(() => undefined)
+    } else if (actionId === 'run-workflow' && typeof actionData.workflowCommand === 'string') {
+      void terminalAgentCommandRunnerRef.current?.(actionData.workflowCommand)
+    }
+
+    ipcRenderer?.invoke('ui:intent:action', actionId, uiIntent).catch(() => undefined)
+  }, [uiIntent])
 
   const openEditorPath = useCallback((path: string) => {
     closeFloatingPages()
@@ -414,6 +676,100 @@ function App() {
     setManualInitialSearch(search.trim())
     setShowHelp(true)
   }
+
+  const writeTerminalSystemMessage = useCallback((title: string, body: string, tone: 'info' | 'success' | 'error' = 'info') => {
+    const color =
+      tone === 'success'
+        ? '\x1b[32m'
+        : tone === 'error'
+          ? '\x1b[31m'
+          : '\x1b[36m'
+    const reset = '\x1b[0m'
+    const normalizedBody = body.replace(/\r?\n/g, '\r\n')
+    const payload = `\r\n${color}[EasyTerminal] ${title}${reset}\r\n${normalizedBody}\r\n`
+    window.dispatchEvent(new CustomEvent(`terminal:write:${activeSessionId}`, { detail: payload }))
+  }, [activeSessionId])
+
+  const formatWorkflowNodeTitle = useCallback((nodeType?: string, nodeLabel?: string, nodeId?: string) => {
+    if (nodeLabel || nodeType) {
+      return `${nodeLabel || nodeId || 'Unknown'}${nodeType ? ` (${nodeType})` : ''}`
+    }
+    return nodeId || 'Unknown'
+  }, [])
+
+  const resolveWorkflowLogTone = useCallback((logType: 'info' | 'error' | 'output'): 'success' | 'error' | 'info' => {
+    if (logType === 'error') return 'error'
+    if (logType === 'output') return 'success'
+    return 'info'
+  }, [])
+
+  const persistTerminalAgentActivity = useCallback(async (
+    commandLine: string,
+    resultText: string,
+    status: 'success' | 'error',
+    commandKind: 'agent' | 'skill' | 'prompt' | 'workflow' | 'context' | 'help'
+  ) => {
+    if (!ipcRenderer) return
+
+    const trimmedResult = truncateTerminalOutput(resultText, 4000)
+    await Promise.all([
+      ipcRenderer.invoke('context:session-event', {
+        session_id: activeSessionId,
+        event_type: 'user_prompt',
+        payload: commandLine,
+        token_estimate: Math.ceil(commandLine.length / 4),
+      }),
+      ipcRenderer.invoke('context:session-event', {
+        session_id: activeSessionId,
+        event_type: 'assistant_reply',
+        payload: `${status.toUpperCase()}: ${trimmedResult}`,
+        token_estimate: Math.ceil(trimmedResult.length / 4),
+      }),
+      ipcRenderer.invoke('context:record', {
+        scope: 'session',
+        kind: status === 'error' ? 'issue' : 'summary',
+        title: TERMINAL_AGENT_COPY.activityRecordTitle(commandLine.split(' ')[0]),
+        summary: TERMINAL_AGENT_COPY.activitySummary(commandKind, status, commandLine),
+        details: trimmedResult,
+        salience: status === 'error' ? 0.86 : 0.58,
+        status: 'active',
+        source_type: 'tool',
+        source_ref: activeSessionId,
+        evidence_refs: [commandLine.split(' ')[0], commandKind],
+      }),
+    ]).catch(() => undefined)
+  }, [activeSessionId])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+
+    const handleWorkflowStatus = (
+      _event: unknown,
+      status: { type?: string; nodeId?: string; nodeType?: string; nodeLabel?: string }
+    ) => {
+      const displayName = formatWorkflowNodeTitle(status?.nodeType, status?.nodeLabel, status?.nodeId)
+      const actionLabel = status?.type === 'node_complete' ? '完成' : '开始'
+      writeTerminalSystemMessage(`Workflow ${actionLabel}`, displayName, 'info')
+    }
+
+    const handleWorkflowLog = (
+      _event: unknown,
+      log: { nodeId?: string; type?: 'info' | 'error' | 'output'; message?: string }
+    ) => {
+      if (!log) return
+      const line = `[${log.nodeId || 'workflow'}] ${log.message || ''}`.trim()
+      const tone = resolveWorkflowLogTone(log.type || 'info')
+      writeTerminalSystemMessage('Workflow 日志', line || '收到运行日志', tone)
+    }
+
+    ipcRenderer.on('workflow:status', handleWorkflowStatus)
+    ipcRenderer.on('workflow:log', handleWorkflowLog)
+
+    return () => {
+      ipcRenderer.removeListener('workflow:status', handleWorkflowStatus)
+      ipcRenderer.removeListener('workflow:log', handleWorkflowLog)
+    }
+  }, [ipcRenderer, formatWorkflowNodeTitle, resolveWorkflowLogTone, writeTerminalSystemMessage])
 
   const primaryThemePresets = THEME_PRESETS.filter(themePreset => !themePreset.id.startsWith('catppuccin-'))
   const catppuccinThemePresets = THEME_PRESETS.filter(themePreset => themePreset.id.startsWith('catppuccin-'))
@@ -614,28 +970,6 @@ function App() {
     ipcRenderer.invoke('fs:mkdir', `${currentDir}/${name.trim()}`).then(() => loadFiles(currentDir))
   }
 
-  const handleDeletePath = (targetPath: string) => {
-    if (!ipcRenderer) return
-    const confirmed = window.confirm(`确认删除：${targetPath} ?`)
-    if (!confirmed) return
-    ipcRenderer.invoke('fs:delete', targetPath).then(() => {
-      if (activeFile === targetPath) {
-        setActiveFile(null)
-        setEditorFile(null)
-        setPreviewImage(null)
-      }
-      loadFiles(currentDir)
-    })
-  }
-
-  const copyPathToClipboard = (targetPath: string) => {
-    navigator.clipboard.writeText(targetPath).catch(() => {
-      if (electron?.clipboard) {
-        electron.clipboard.writeText(targetPath)
-      }
-    })
-  }
-
   const handleDirClick = (dir: string) => {
     setCurrentDir(dir)
     loadFiles(dir)
@@ -655,6 +989,22 @@ function App() {
     setActiveSuggestionIndex(next.length > 0 ? 0 : -1)
   }, [])
 
+  const recordRecentTerminalAgentCommand = useCallback((command: string, summary: string) => {
+    const normalizedCommand = command.trim()
+    if (!normalizedCommand.startsWith('/')) return
+    const entry: RecentTerminalAgentCommand = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      command: normalizedCommand,
+      summary,
+      usedAt: new Date().toISOString(),
+    }
+
+    setRecentTerminalAgentCommands(prev => {
+      const deduped = prev.filter(item => item.command !== normalizedCommand)
+      return [entry, ...deduped].slice(0, 8)
+    })
+  }, [])
+
   const quoteShellValue = (value: string) => (value.includes(' ') ? `"${value}"` : value)
 
   const replaceLastToken = (source: string, replacement: string) => {
@@ -663,6 +1013,109 @@ function App() {
     const lastSpaceIndex = source.lastIndexOf(' ')
     return lastSpaceIndex === -1 ? replacement : `${source.slice(0, lastSpaceIndex + 1)}${replacement}`
   }
+
+  const buildPromptRenderTemplate = (variables: string[]) => {
+    if (!variables.length) return '{}'
+    return JSON.stringify(Object.fromEntries(variables.map(variable => [variable, ''])))
+  }
+
+  const buildWorkflowRunTemplate = (variables: Record<string, string>) => {
+    const keys = Object.keys(variables || {})
+    if (!keys.length) return '{"input":""}'
+    return JSON.stringify(Object.fromEntries(keys.map(key => [key, variables[key] || ''])))
+  }
+
+  const deriveWorkflowCommand = useCallback((resultData: unknown) => {
+    const normalizeWorkflow = (workflow: unknown) => {
+      if (!workflow || typeof workflow !== 'object') return null
+      const record = workflow as Record<string, unknown>
+      if (typeof record.id !== 'string' || !record.id.trim()) return null
+      return `/workflow run ${record.id} ${buildWorkflowRunTemplate((record.variables || {}) as Record<string, string>)}`
+    }
+
+    if (Array.isArray(resultData) && resultData.length === 1) {
+      return normalizeWorkflow(resultData[0])
+    }
+
+    return normalizeWorkflow(resultData)
+  }, [])
+
+  const loadTerminalAgentSuggestions = useCallback(async (query: string) => {
+    if (!ipcRenderer) {
+      const normalizedQuery = query.toLowerCase()
+      const staticSuggestions = TERMINAL_AGENT_COMMANDS
+        .filter(item => item.command.toLowerCase().includes(normalizedQuery) || item.summary.toLowerCase().includes(normalizedQuery))
+        .slice(0, 8)
+        .map((item, index) => ({
+          id: `slash-${index}-${item.command}`,
+          label: item.command.trim(),
+          value: item.command,
+          hint: item.summary,
+          kind: 'manual' as const,
+          replaceMode: 'all' as const,
+        }))
+      updateSuggestions(staticSuggestions)
+      return
+    }
+
+    const normalizedQuery = query.toLowerCase()
+    const baseSuggestions: InputSuggestion[] = TERMINAL_AGENT_COMMANDS
+      .filter(item => item.command.toLowerCase().includes(normalizedQuery) || item.summary.toLowerCase().includes(normalizedQuery))
+      .slice(0, 6)
+      .map((item, index) => ({
+        id: `slash-${index}-${item.command}`,
+        label: item.command.trim(),
+        value: item.command,
+        hint: item.summary,
+        kind: 'manual' as const,
+        replaceMode: 'all' as const,
+      }))
+
+    if (/^\/prompt\s+render(?:\s+.*)?$/i.test(query)) {
+      const match = query.match(/^\/prompt\s+render\s+(\S*)/i)
+      const promptToken = match?.[1]?.trim().toLowerCase() || ''
+      const prompts = await ipcRenderer.invoke('prompt:list')
+      const promptSuggestions = ((prompts as Array<{ id: string; title: string; variables?: string[] }>) || [])
+        .filter(prompt => !promptToken || prompt.id.toLowerCase().includes(promptToken) || prompt.title.toLowerCase().includes(promptToken))
+        .slice(0, 6)
+        .map(prompt => ({
+          id: `prompt-render-${prompt.id}`,
+          label: `${prompt.title} (${prompt.id})`,
+          value: `/prompt render ${prompt.id} ${buildPromptRenderTemplate(prompt.variables || [])}`,
+          hint: prompt.variables?.length ? `变量: ${prompt.variables.join(', ')}` : '无变量，直接可渲染',
+          kind: 'manual' as const,
+          replaceMode: 'all' as const,
+        }))
+      updateSuggestions([...promptSuggestions, ...baseSuggestions].slice(0, 8))
+      return
+    }
+
+    if (/^\/workflow\s+(run|get)(?:\s+.*)?$/i.test(query)) {
+      const match = query.match(/^\/workflow\s+(run|get)\s+(\S*)/i)
+      const mode = match?.[1]?.toLowerCase() || 'get'
+      const workflowToken = match?.[2]?.trim().toLowerCase() || ''
+      const workflows = await ipcRenderer.invoke('workflow:list')
+      const workflowSuggestions = ((workflows as Array<{ id: string; name: string; variables?: Record<string, string> }>) || [])
+        .filter(workflow => !workflowToken || workflow.id.toLowerCase().includes(workflowToken) || workflow.name.toLowerCase().includes(workflowToken))
+        .slice(0, 6)
+        .map(workflow => ({
+          id: `workflow-${mode}-${workflow.id}`,
+          label: `${workflow.name} (${workflow.id})`,
+          value: mode === 'run'
+            ? `/workflow run ${workflow.id} ${buildWorkflowRunTemplate(workflow.variables || {})}`
+            : `/workflow get ${workflow.id}`,
+          hint: mode === 'run'
+            ? `执行工作流${Object.keys(workflow.variables || {}).length ? ` · 参数: ${Object.keys(workflow.variables || {}).join(', ')}` : ''}`
+            : '查看工作流定义',
+          kind: 'manual' as const,
+          replaceMode: 'all' as const,
+        }))
+      updateSuggestions([...workflowSuggestions, ...baseSuggestions].slice(0, 8))
+      return
+    }
+
+    updateSuggestions(baseSuggestions.slice(0, 8))
+  }, [updateSuggestions])
 
   const buildPendingImageFromFile = useCallback((file: File, dataUrl: string, mimeType: string) => {
     const base64 = dataUrl.split(',')[1]
@@ -747,10 +1200,19 @@ function App() {
       return
     }
 
+    if (trimmed.startsWith('/')) {
+      // Debounce terminal agent suggestions
+      if (autocompleteTimerRef.current) clearTimeout(autocompleteTimerRef.current)
+      autocompleteTimerRef.current = setTimeout(() => { void loadTerminalAgentSuggestions(trimmed) }, 200)
+      return
+    }
+
     const isCdCommand = /^\s*cd(?:\s+.*)?$/.test(val)
 
     if (isCdCommand) {
-      await loadFileSuggestions(val)
+      // Debounce file suggestions
+      if (autocompleteTimerRef.current) clearTimeout(autocompleteTimerRef.current)
+      autocompleteTimerRef.current = setTimeout(() => { void loadFileSuggestions(val) }, 200)
       return
     }
 
@@ -762,18 +1224,21 @@ function App() {
         updateSuggestions([])
         return
       }
-
-      const results = await ipcRenderer.invoke('autocomplete:path', lastPart, currentDir)
-      updateSuggestions(
-        (results as string[]).slice(0, 8).map((path: string, index: number) => ({
-          id: `path-${index}-${path}`,
-          label: path,
-          value: quoteShellValue(path),
-          hint: '路径补全',
-          kind: 'path' as const,
-          replaceMode: 'last-token' as const,
-        }))
-      )
+      // Debounce path autocomplete
+      if (autocompleteTimerRef.current) clearTimeout(autocompleteTimerRef.current)
+      autocompleteTimerRef.current = setTimeout(async () => {
+        const results = await ipcRenderer.invoke('autocomplete:path', lastPart, currentDir)
+        updateSuggestions(
+          (results as string[]).slice(0, 8).map((path: string, index: number) => ({
+            id: `path-${index}-${path}`,
+            label: path,
+            value: quoteShellValue(path),
+            hint: '路径补全',
+            kind: 'path' as const,
+            replaceMode: 'last-token' as const,
+          }))
+        )
+      }, 200)
     } else {
       const manualSuggestions = searchManualCommandSuggestions(trimmed, 5).map(item => ({
         id: `manual-${item.entryId}`,
@@ -789,24 +1254,303 @@ function App() {
         return
       }
 
-      const results = await ipcRenderer.invoke('autocomplete:fuzzy', trimmed)
-      const cliSuggestions = (results as string[])
-        .filter((cmd: string) => !manualSuggestions.some(item => item.value === cmd))
-        .slice(0, 8)
-        .map((cmd: string, index: number) => ({
-          id: `cmd-${index}-${cmd}`,
-          label: cmd,
-          value: cmd,
-          hint: cmd.includes(' ') ? '历史命令' : '终端命令',
-          kind: (cmd.includes(' ') ? 'history' : 'command') as 'history' | 'command',
-          replaceMode: 'all' as const,
-        }))
+      // Debounce fuzzy autocomplete
+      if (autocompleteTimerRef.current) clearTimeout(autocompleteTimerRef.current)
+      autocompleteTimerRef.current = setTimeout(async () => {
+        const results = await ipcRenderer.invoke('autocomplete:fuzzy', trimmed)
+        const cliSuggestions = (results as string[])
+          .filter((cmd: string) => !manualSuggestions.some(item => item.value === cmd))
+          .slice(0, 8)
+          .map((cmd: string, index: number) => ({
+            id: `cmd-${index}-${cmd}`,
+            label: cmd,
+            value: cmd,
+            hint: cmd.includes(' ') ? '历史命令' : '终端命令',
+            kind: (cmd.includes(' ') ? 'history' : 'command') as 'history' | 'command',
+            replaceMode: 'all' as const,
+          }))
 
-      updateSuggestions([...manualSuggestions, ...cliSuggestions].slice(0, 8))
+        updateSuggestions([...manualSuggestions, ...cliSuggestions].slice(0, 8))
+      }, 200)
     }
   }
 
-  const handleSend = () => {
+  const runTerminalAgentCommand = useCallback(async (rawInput: string) => {
+    if (!ipcRenderer) return false
+
+    const trimmed = rawInput.trim()
+    if (!trimmed.startsWith('/')) return false
+
+    const payload = trimmed.slice(1).trim()
+    if (!payload) {
+      writeTerminalSystemMessage(TERMINAL_AGENT_COPY.shellTitle, TERMINAL_AGENT_HELP)
+      return true
+    }
+
+    const [commandToken, ...restTokens] = payload.split(' ')
+    const command = commandToken.toLowerCase()
+    const rest = restTokens.join(' ').trim()
+
+    const publishTerminalAgentIntent = async (
+      title: string,
+      description: string,
+      resultText: string,
+      kind: 'agent' | 'skill' | 'prompt' | 'workflow' | 'context' | 'help',
+      options?: { workflowCommand?: string | null; streamingId?: string },
+    ) => {
+      const actions = kind === 'help'
+        ? []
+        : [
+            { id: 'insert-input', label: '插入输入框', variant: 'secondary' as const },
+            { id: 'save-result-context', label: '保存到 Context', variant: 'primary' as const },
+            ...(options?.workflowCommand
+              ? [{ id: 'run-workflow', label: '执行 Workflow', variant: 'secondary' as const }]
+              : []),
+          ]
+
+      await ipcRenderer.invoke('ui:intent:set', {
+        id: options?.streamingId || `terminal_agent_${Date.now()}`,
+        type: 'show_result_panel',
+        title,
+        description,
+        payload: {
+          commandType: kind,
+          sourceCommand: trimmed,
+          resultText,
+          actionData: {
+            sourceCommand: trimmed,
+            resultText,
+            workflowCommand: options?.workflowCommand || undefined,
+          },
+        },
+        actions,
+      })
+      // Clear streaming state after intent is published
+      if (options?.streamingId) {
+        setStreamingIntentId(null)
+      }
+    }
+
+    const runAgent = async (query: string, toolNames?: string[]) => {
+      const streamingId = `terminal_agent_${Date.now()}`
+      setStreamingIntentId(streamingId)
+      writeTerminalSystemMessage(TERMINAL_AGENT_COPY.agentRunningTitle, `${TERMINAL_AGENT_COPY.requestPrefix}：${query}`)
+
+      // Set up streaming listener
+      const streamListener = (_event: unknown, data: { type: string; content: string; tool?: string }) => {
+        const { type, content, tool } = data
+        const maxLen = 500
+        const truncated = content.length > maxLen ? content.substring(0, maxLen) + '...' : content
+        switch (type) {
+          case 'thought':
+            writeTerminalSystemMessage('\u{1F4AD} Thinking', truncated)
+            break
+          case 'action':
+            writeTerminalSystemMessage('\u{1F916} Action', `[${tool ?? 'unknown'}]\n${truncated}`)
+            break
+          case 'observation': {
+            const obs = content.length > maxLen ? content.substring(0, maxLen) + '...' : content
+            writeTerminalSystemMessage('\u{1F440} Observation', obs)
+            break
+          }
+          case 'complete':
+            // Final answer will be shown separately, skip duplicate
+            break
+          case 'error':
+            writeTerminalSystemMessage('\u{26A0} Error', truncated, 'error')
+            break
+        }
+      }
+      ipcRenderer?.on('agent:stream', streamListener)
+
+      try {
+        const result = await ipcRenderer.invoke('agent:react', query, toolNames, { sessionId: activeSessionId })
+        const formatted = formatAgentTerminalResult(result)
+        writeTerminalSystemMessage(TERMINAL_AGENT_COPY.agentResultTitle, formatted, 'success')
+        await publishTerminalAgentIntent(TERMINAL_AGENT_COPY.agentResultPanelTitle, TERMINAL_AGENT_COPY.agentResultPanelDescription, formatted, command as 'agent' | 'context', { streamingId })
+        await persistTerminalAgentActivity(trimmed, formatted, 'success', command as 'agent' | 'context')
+        recordRecentTerminalAgentCommand(trimmed, query.slice(0, 96))
+      } finally {
+        ipcRenderer?.removeListener('agent:stream', streamListener)
+        setStreamingIntentId(null)
+      }
+    }
+
+    const runCapability = async (capabilityId: string, input: Record<string, unknown>, label: string) => {
+      const streamingId = `terminal_capability_${Date.now()}`
+      setStreamingIntentId(streamingId)
+      writeTerminalSystemMessage(TERMINAL_AGENT_COPY.capabilityRunningTitle, `${label}\n${formatTerminalValue(input)}`)
+      try {
+        const result = await ipcRenderer.invoke('capability:invoke', capabilityId, input)
+        const formatted = formatCapabilityTerminalResult(label, result)
+        const workflowCommand = capabilityId === 'workflow.get' || capabilityId === 'workflow.search'
+          ? deriveWorkflowCommand(result?.data)
+          : null
+        writeTerminalSystemMessage(TERMINAL_AGENT_COPY.capabilityResultTitle, formatted.body, formatted.tone)
+        await publishTerminalAgentIntent(
+          TERMINAL_AGENT_COPY.capabilityResultPanelTitle(label),
+          TERMINAL_AGENT_COPY.capabilityResultPanelDescription,
+          formatted.body,
+          command as 'skill' | 'prompt' | 'workflow' | 'context',
+          { workflowCommand, streamingId }
+        )
+        await persistTerminalAgentActivity(trimmed, formatted.body, formatted.tone === 'error' ? 'error' : 'success', command as 'skill' | 'prompt' | 'workflow' | 'context')
+        recordRecentTerminalAgentCommand(trimmed, label)
+      } finally {
+        setStreamingIntentId(null)
+      }
+    }
+
+    try {
+      switch (command) {
+        case 'help':
+          if (!rest || rest === 'agent' || rest === 'easyterminal' || rest === 'terminal-agent') {
+            openManualCenter('agent')
+            writeTerminalSystemMessage(TERMINAL_AGENT_COPY.helpOpenedTitle, TERMINAL_AGENT_COPY.helpOpenedMessage)
+            await persistTerminalAgentActivity(trimmed, '已打开终端 Agent 帮助。', 'success', 'help')
+            recordRecentTerminalAgentCommand(trimmed, '打开终端 Agent 帮助')
+            return true
+          }
+          return false
+        case 'agent':
+          if (!rest || rest === 'help') {
+            writeTerminalSystemMessage(TERMINAL_AGENT_COPY.shellHelpTitle, TERMINAL_AGENT_HELP)
+            await publishTerminalAgentIntent(TERMINAL_AGENT_COPY.helpIntentTitle, TERMINAL_AGENT_COPY.helpIntentDescription, TERMINAL_AGENT_HELP, 'help')
+            recordRecentTerminalAgentCommand(trimmed, '查看 /agent 帮助')
+            return true
+          }
+          await runAgent(rest)
+          return true
+        case 'skill':
+          if (!rest || rest === 'help') {
+            writeTerminalSystemMessage(TERMINAL_AGENT_COPY.skillHelpTitle, '/skill <query>\n/skill get <skillId>')
+            return true
+          }
+          if (rest.startsWith('get ')) {
+            await runCapability('skill.get', { skillId: rest.slice(4).trim() }, 'skill.get')
+            return true
+          }
+          await runCapability('skill.search', { query: rest.replace(/^search\s+/i, ''), topK: 5 }, 'skill.search')
+          return true
+        case 'prompt':
+          if (!rest || rest === 'help') {
+            writeTerminalSystemMessage(TERMINAL_AGENT_COPY.promptHelpTitle, '/prompt <query>\n/prompt search <query>\n/prompt optimize <draft>\n/prompt render <promptId> {"var":"value"}')
+            return true
+          }
+          if (rest.startsWith('optimize ')) {
+            await runCapability('prompt.optimize', { draftPrompt: rest.slice(9).trim() }, 'prompt.optimize')
+            return true
+          }
+          if (rest.startsWith('render ')) {
+            const renderPayload = rest.slice(7).trim()
+            const [promptIdToken, ...valuesTokens] = renderPayload.split(' ')
+            if (!promptIdToken) {
+              writeTerminalSystemMessage(TERMINAL_AGENT_COPY.promptHelpTitle, `${TERMINAL_AGENT_COPY.usagePrefix} /prompt render <promptId> {"var":"value"}`, 'error')
+              return true
+            }
+            const values = safeParseJsonObject(valuesTokens.join(' '))
+            await runCapability('prompt.render', { promptId: promptIdToken, values }, 'prompt.render')
+            return true
+          }
+          await runCapability('prompt.search', { query: rest.replace(/^search\s+/i, '') }, 'prompt.search')
+          return true
+        case 'workflow':
+          if (!rest || rest === 'help') {
+            writeTerminalSystemMessage(TERMINAL_AGENT_COPY.workflowHelpTitle, '/workflow <query>\n/workflow search <query>\n/workflow get <workflowId>\n/workflow run <workflowId> {"input":"value"}')
+            return true
+          }
+          if (rest.startsWith('get ')) {
+            await runCapability('workflow.get', { workflowId: rest.slice(4).trim() }, 'workflow.get')
+            return true
+          }
+          if (rest.startsWith('run ')) {
+            const runPayload = rest.slice(4).trim()
+            const [workflowIdToken, ...variablesTokens] = runPayload.split(' ')
+            if (!workflowIdToken) {
+              writeTerminalSystemMessage(TERMINAL_AGENT_COPY.workflowHelpTitle, `${TERMINAL_AGENT_COPY.usagePrefix} /workflow run <workflowId> {"input":"value"}`, 'error')
+              return true
+            }
+            const variables = safeParseJsonObject(variablesTokens.join(' '))
+            await runCapability('workflow.execute', { workflowId: workflowIdToken, variables }, 'workflow.execute')
+            return true
+          }
+          await runCapability('workflow.search', { query: rest.replace(/^search\s+/i, '') }, 'workflow.search')
+          return true
+        case 'context':
+          if (!rest || rest === 'help') {
+            writeTerminalSystemMessage(TERMINAL_AGENT_COPY.contextHelpTitle, '/context list\n/context records [query]\n/context snapshots\n/context events\n/context capture <text>')
+            return true
+          }
+          if (rest === 'list') {
+            await runCapability('context.list', {}, 'context.list')
+            return true
+          }
+          if (rest === 'snapshots') {
+            await runCapability('context.snapshots', { limit: 10 }, 'context.snapshots')
+            return true
+          }
+          if (rest === 'events') {
+            await runCapability('context.session_events', { sessionId: activeSessionId, limit: 20 }, 'context.session_events')
+            return true
+          }
+          if (rest.startsWith('capture ')) {
+            await runCapability('context.capture', { content: rest.slice(8).trim(), source: 'TerminalAgentCommand' }, 'context.capture')
+            return true
+          }
+          if (rest === 'records') {
+            await runCapability('context.records', { limit: 10 }, 'context.records')
+            return true
+          }
+          if (rest.startsWith('records ')) {
+            await runCapability('context.records', { query: rest.slice(8).trim(), limit: 10 }, 'context.records')
+            return true
+          }
+          await runAgent(rest, ['context.list', 'context.records', 'context.snapshots', 'context.session_events', 'context.capture'])
+          return true
+        case 'et':
+          if (!rest || rest === 'help' || rest === 'manual') {
+            openManualCenter('agent')
+            writeTerminalSystemMessage(TERMINAL_AGENT_COPY.helpOpenedTitle, TERMINAL_AGENT_COPY.helpOpenedMessage)
+            await persistTerminalAgentActivity(trimmed, '已打开终端 Agent 帮助。', 'success', 'help')
+            recordRecentTerminalAgentCommand(trimmed, '打开终端 Agent 帮助')
+            return true
+          }
+          writeTerminalSystemMessage(TERMINAL_AGENT_COPY.easyTerminalHelpTitle, TERMINAL_AGENT_HELP)
+          await publishTerminalAgentIntent(TERMINAL_AGENT_COPY.helpIntentTitle, TERMINAL_AGENT_COPY.helpIntentDescription, TERMINAL_AGENT_HELP, 'help')
+          await persistTerminalAgentActivity(trimmed, TERMINAL_AGENT_HELP, 'success', 'help')
+          recordRecentTerminalAgentCommand(trimmed, '查看 EasyTerminal 帮助')
+          return true
+        default:
+          return false
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : TERMINAL_AGENT_COPY.unknownCommandError
+      writeTerminalSystemMessage(
+        TERMINAL_AGENT_COPY.errorTitle,
+        message,
+        'error'
+      )
+      await persistTerminalAgentActivity(trimmed, message, 'error', (['agent', 'skill', 'prompt', 'workflow', 'context'].includes(command) ? command : 'help') as 'agent' | 'skill' | 'prompt' | 'workflow' | 'context' | 'help')
+      return true
+    }
+  }, [activeSessionId, openManualCenter, persistTerminalAgentActivity, recordRecentTerminalAgentCommand, writeTerminalSystemMessage, setStreamingIntentId])
+
+  const executeRecentTerminalAgentCommand = useCallback(async (command: string) => {
+    const handled = await runTerminalAgentCommand(command)
+    if (handled) {
+      setInput('')
+      updateSuggestions([])
+    }
+  }, [runTerminalAgentCommand, updateSuggestions])
+
+  useEffect(() => {
+    terminalAgentCommandRunnerRef.current = executeRecentTerminalAgentCommand
+    return () => {
+      terminalAgentCommandRunnerRef.current = null
+    }
+  }, [executeRecentTerminalAgentCommand])
+
+  const handleSend = async () => {
     // Handle pending image paste
     if (pendingImages.length > 0) {
       for (const pendingImage of pendingImages) {
@@ -828,6 +1572,13 @@ function App() {
     if (!input.trim()) return
     
     const trimmedInput = input.trim()
+    const handledByTerminalAgent = await runTerminalAgentCommand(trimmedInput)
+    if (handledByTerminalAgent) {
+      setInput('')
+      updateSuggestions([])
+      return
+    }
+
     const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(trimmedInput)
     
     if (trimmedInput.startsWith('vim ')) {
@@ -924,7 +1675,7 @@ function App() {
         // Many interactive TUIs (like Inquirer.js) prefer pure \r or \n
         if (ipcRenderer) ipcRenderer.send('pty:write', activeSessionId, '\r')
       } else {
-        handleSend()
+        void handleSend()
       }
     } else if (e.key === 'ArrowUp' && !input) {
       e.preventDefault()
@@ -979,6 +1730,41 @@ function App() {
     setActiveSessionId(newId)
   }
 
+  const startRenamingSession = (sessionId: string) => {
+    const targetSession = sessions.find(session => session.id === sessionId)
+    if (!targetSession) return
+    setEditingSessionId(sessionId)
+    setEditingSessionName(targetSession.name)
+  }
+
+  const commitSessionRename = () => {
+    if (!editingSessionId) return
+    const nextName = editingSessionName.trim()
+    const targetSession = sessions.find(session => session.id === editingSessionId)
+    if (!targetSession) {
+      setEditingSessionId(null)
+      setEditingSessionName('')
+      return
+    }
+    if (!nextName || nextName === targetSession.name) {
+      setEditingSessionId(null)
+      setEditingSessionName('')
+      return
+    }
+    setSessions(prev => prev.map(session => (
+      session.id === editingSessionId
+        ? { ...session, name: nextName }
+        : session
+    )))
+    setEditingSessionId(null)
+    setEditingSessionName('')
+  }
+
+  const cancelSessionRename = () => {
+    setEditingSessionId(null)
+    setEditingSessionName('')
+  }
+
   const handlePaste = (e: React.ClipboardEvent) => {
     const items = e.clipboardData?.items
     if (!items) return
@@ -1031,7 +1817,7 @@ function App() {
 
   const agentPanelTitle =
     agentPanel === 'context'
-      ? '上下文保险箱'
+      ? '上下文管理台'
       : agentPanel === 'prompts'
         ? 'Prompt 助手'
         : agentPanel === 'skills'
@@ -1042,11 +1828,15 @@ function App() {
               ? 'UI 组件库'
               : agentPanel === 'migration'
                 ? '迁移中心'
-                : ''
+                : agentPanel === 'capabilities'
+                  ? '能力中心'
+                  : agentPanel === 'browser'
+                    ? '内置浏览器'
+                    : ''
 
   const agentPanelDescription =
     agentPanel === 'context'
-      ? '把沉淀的会话、片段和项目资产集中放到弹出页里统一查看与编辑。'
+      ? '集中处理上下文的存储、检索、分析和导入导出，详情只在右侧临时展开。'
       : agentPanel === 'prompts'
         ? '在独立页面里管理 Prompt 模板、变量和优化结果，不再压缩主工作区。'
         : agentPanel === 'skills'
@@ -1057,240 +1847,242 @@ function App() {
               ? '组件库与样式样例改成独立弹页，避免挤压终端与文件系统。'
               : agentPanel === 'migration'
                 ? '迁移资料和生成结果统一在弹出页里查看、复制与编辑。'
+                : agentPanel === 'capabilities'
+                  ? '浏览和执行所有已注册的能力，包括提示词、技能、工作流、知识库、上下文和 UI 交互能力。'
+                : agentPanel === 'browser'
+                  ? '内置浏览器，支持浏览网页、登录 AI 服务、选中文本发送到终端。'
                 : ''
+
+  const activeSession = sessions.find(s => s.id === activeSessionId)
+  const shellToolbarButtonClass = 'shell-surface-soft inline-flex h-8 shrink-0 items-center gap-1.5 rounded-[0.95rem] border shell-border px-3 text-[11px] font-medium text-[var(--text-secondary)] transition-colors hover:border-[var(--panel-border-glow)] hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]'
+  const splitterTrackClass = 'absolute inset-y-10 left-1/2 w-px -translate-x-1/2 rounded-full bg-[color:color-mix(in_srgb,var(--panel-border)_42%,transparent)]'
+  const splitterThumbClass = 'absolute left-1/2 top-1/2 h-16 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[color:color-mix(in_srgb,var(--surface-muted)_72%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--panel-border)_48%,transparent),0_8px_18px_-18px_var(--shadow-color)]'
 
   return (
     <div 
-      className={`flex h-screen font-sans selection:bg-blue-500/30 overflow-hidden relative text-[var(--text-primary)] ${getThemePreset(theme).className}`}
+      className={`relative flex h-screen overflow-hidden font-sans text-[var(--text-primary)] selection:bg-blue-500/30 ${getThemePreset(theme).className}`}
       style={{ background: 'var(--bg-gradient)' }}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
     >
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.03] to-transparent" />
+        <div className="absolute left-[9%] top-[12%] h-56 w-56 rounded-full bg-[var(--accent)]/10 blur-3xl" />
+        <div className="absolute right-[8%] top-[8%] h-48 w-48 rounded-full bg-sky-400/10 blur-3xl" />
+      </div>
       
       {/* Title bar drag region (top edge) */}
       {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       <div className="absolute top-0 left-0 w-full h-8 z-50 pointer-events-none" style={{ WebkitAppRegion: 'drag' } as any}></div>
 
-      {/* Left Sidebar (Sessions) */}
-      <div className="w-16 shrink-0 border-r border-[var(--panel-border)] flex flex-col items-center py-10 z-40 bg-[var(--panel-bg)] backdrop-blur-xl">
-        <div className="flex-1 flex flex-col gap-4 items-center">
-          {sessions.map((s) => (
-            <div 
-              key={s.id}
-              className="relative group flex flex-col items-center gap-1"
-            >
-              <div
-                onClick={() => setActiveSessionId(s.id)}
-                onDoubleClick={() => {
-                  setEditingSessionId(s.id);
-                  setEditSessionName(s.name);
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setEditingSessionId(s.id);
-                  setEditSessionName(s.name);
-                }}
-                className={`w-10 h-10 rounded-xl flex flex-col items-center justify-center cursor-pointer transition-all shrink-0 ${
-                  activeSessionId === s.id 
-                    ? 'bg-[var(--accent)] text-white shadow-[0_0_15px_var(--accent)] scale-110' 
-                    : 'bg-[var(--panel-border)] text-[var(--text-secondary)] hover:bg-[var(--panel-border-glow)] hover:scale-105'
-                }`}
-                title={s.name + ' (Double-click or Right-click to rename)'}
-              >
-                <TerminalSquare size={16} />
-                
-                {/* Hover Close Button */}
-                {sessions.length > 1 && (
-                  <div 
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (window.confirm(`Are you sure you want to close session: ${s.name}?`)) {
-                        const newSessions = sessions.filter(sess => sess.id !== s.id);
-                        setSessions(newSessions);
-                        if (activeSessionId === s.id) {
-                          setActiveSessionId(newSessions[0].id);
-                        }
-                        if (ipcRenderer) {
-                          ipcRenderer.send('pty:kill', s.id);
-                        }
-                      }
-                    }}
-                    className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity text-white hover:bg-red-600 shadow-md z-10"
-                    title="Close Session"
-                  >
-                    <X size={10} strokeWidth={3} />
-                  </div>
-                )}
-              </div>
-              
-              {/* Inline Editor or Display Name */}
-              {editingSessionId === s.id ? (
-                <input
-                  autoFocus
-                  value={editSessionName}
-                  onChange={(e) => setEditSessionName(e.target.value)}
-                  onBlur={() => {
-                    if (editSessionName.trim()) {
-                      setSessions(sessions.map(sess => sess.id === s.id ? { ...sess, name: editSessionName.trim() } : sess));
-                    }
-                    setEditingSessionId(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      if (editSessionName.trim()) {
-                        setSessions(sessions.map(sess => sess.id === s.id ? { ...sess, name: editSessionName.trim() } : sess));
-                      }
-                      setEditingSessionId(null);
-                    } else if (e.key === 'Escape') {
-                      setEditingSessionId(null);
-                    }
-                  }}
-                  className="text-[10px] w-14 text-center bg-black/40 text-white rounded px-1 outline-none border border-[var(--accent)] shadow-lg"
-                />
-              ) : (
-                s.name && <span className="text-[10px] w-14 text-center opacity-80 leading-tight truncate" title={s.name}>{s.name}</span>
-              )}
-            </div>
-          ))}
-          <div 
-            onClick={createNewSession}
-            className="w-10 h-10 rounded-full border border-dashed border-[var(--text-secondary)] text-[var(--text-secondary)] flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] hover:text-[var(--text-primary)] transition-all"
-            title="New Session"
-          >
-            <Plus size={16} />
-          </div>
-        </div>
+      {/* Left Sidebar */}
+      <div className="relative z-40 flex w-[5.25rem] shrink-0">
+        <div className="shell-overlay absolute inset-y-0 left-0 right-0 border-r border-r-[color:color-mix(in_srgb,var(--panel-border)_26%,transparent)] backdrop-blur-xl shadow-[inset_-1px_0_0_color-mix(in_srgb,var(--panel-border)_18%,transparent),18px_0_36px_-34px_var(--shadow-color)]" />
 
-        <div className="flex flex-col gap-2 mt-auto">
-          <div className="group relative"
-            onClick={() => {
-              openAgentPanel('context');
-              setPreviewUrl(null);
-            }}
-          >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] transition-all ${agentPanel === 'context' ? 'text-cyan-300 bg-[var(--panel-border)]' : 'text-[var(--text-secondary)] hover:text-cyan-300'}`}>
-              <Database size={18} />
+        <div className="relative flex h-full w-full flex-col items-center px-2 pb-4 pt-10">
+          <div className="flex w-full flex-col items-center gap-3">
+            <div className="flex w-full flex-col items-center gap-2">
+              {sessions.map((s) => (
+                <div
+                  key={s.id}
+                  onClick={() => setActiveSessionId(s.id)}
+                  onDoubleClick={() => startRenamingSession(s.id)}
+                  className="group relative flex w-full cursor-pointer flex-col items-center gap-2"
+                  title={s.name}
+                >
+                  <div className={`flex h-[3rem] w-[3rem] items-center justify-center rounded-[0.95rem] border transition-all duration-150 ${
+                    activeSessionId === s.id
+                      ? 'border-[var(--panel-border-glow)] bg-[color:color-mix(in_srgb,var(--surface-strong)_88%,transparent)] text-[var(--text-primary)] shadow-[0_12px_24px_-20px_var(--shadow-color)]'
+                      : 'border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:border-[var(--panel-border-glow)] hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]'
+                  }`}>
+                    <TerminalSquare size={17} />
+                  </div>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      startRenamingSession(s.id)
+                    }}
+                    className="absolute right-2 top-9 z-10 inline-flex h-5 w-5 items-center justify-center rounded-full border border-[var(--panel-border)] bg-[var(--surface-strong)] text-[var(--text-secondary)] opacity-0 shadow-sm transition-all group-hover:opacity-100 hover:border-[var(--panel-border-glow)] hover:text-[var(--text-primary)]"
+                    title="重命名会话"
+                    type="button"
+                  >
+                    <Edit3 size={10} />
+                  </button>
+                  <div className="flex w-full flex-col items-center px-1">
+                    {editingSessionId === s.id ? (
+                      <input
+                        autoFocus
+                        value={editingSessionName}
+                        onChange={(e) => setEditingSessionName(e.target.value)}
+                        onClick={(e) => e.stopPropagation()}
+                        onBlur={commitSessionRename}
+                        onKeyDown={(e) => {
+                          e.stopPropagation()
+                          if (e.key === 'Enter') {
+                            e.preventDefault()
+                            commitSessionRename()
+                          } else if (e.key === 'Escape') {
+                            e.preventDefault()
+                            cancelSessionRename()
+                          }
+                        }}
+                        className="h-6 w-full max-w-[3.9rem] rounded-md border border-[var(--panel-border-glow)] bg-[var(--surface-strong)] px-1 text-center text-[11px] font-medium text-[var(--text-primary)] outline-none"
+                      />
+                    ) : (
+                      <div className={`max-w-[3.9rem] truncate text-center text-[11px] font-medium leading-5 ${activeSessionId === s.id ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
+                        {s.name}
+                      </div>
+                    )}
+                  </div>
+                  {sessions.length > 1 && (
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (window.confirm(`Close session: ${s.name}?`)) {
+                          const newSessions = sessions.filter(sess => sess.id !== s.id);
+                          setSessions(newSessions);
+                          if (activeSessionId === s.id) {
+                            setActiveSessionId(newSessions[0].id);
+                          }
+                          if (ipcRenderer) {
+                            ipcRenderer.send('pty:kill', s.id);
+                          }
+                        }
+                      }}
+                      className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-white opacity-0 shadow-md transition-opacity group-hover:opacity-100"
+                      title="Close Session"
+                    >
+                      <X size={9} strokeWidth={3} />
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div
+                onClick={createNewSession}
+                className="flex h-[3rem] w-[3rem] cursor-pointer items-center justify-center rounded-[0.95rem] border border-dashed border-[var(--panel-border)] text-[var(--text-secondary)] transition-colors hover:border-[var(--panel-border-glow)] hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]"
+                title="New Session"
+              >
+                <Plus size={17} />
+              </div>
             </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">上下文保险箱</span>
           </div>
-          <div className="group relative"
-            onClick={() => {
-              setShowWorkflowStudio(false)
-              setShowApiManager(true)
-            }}
-          >
-            <div className="w-10 h-10 rounded-full text-[var(--text-secondary)] flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] hover:text-blue-400 transition-all">
-              <Server size={18} />
+
+          <div className="flex min-h-0 w-full flex-1 flex-col">
+            {!sidebarCollapsed && (
+              <div className="flex min-h-0 w-full flex-1 flex-col items-center gap-4 overflow-x-visible overflow-y-auto no-scrollbar pt-5">
+              {[
+              { panel: 'context', icon: Archive, label: '上下文管理台', color: 'cyan', onClick: () => { setAgentPanel(current => current === 'context' ? null : 'context'); setPreviewUrl(null); } },
+              { panel: 'api', icon: Server, label: 'API 管理', color: 'blue', onClick: () => { setShowWorkflowStudio(false); setShowApiManager(true); } },
+              { panel: 'prompts', icon: FileText, label: 'Prompt 助手', color: 'blue', onClick: () => { setAgentPanel(current => current === 'prompts' ? null : 'prompts'); setPreviewUrl(null); } },
+              { panel: 'skills', icon: Box, label: 'Skill Hub', color: 'cyan', onClick: () => { setAgentPanel(current => current === 'skills' ? null : 'skills'); setPreviewUrl(null); } },
+              { panel: 'knowledge', icon: BookOpen, label: '知识库', color: 'green', onClick: () => { setAgentPanel(current => current === 'knowledge' ? null : 'knowledge'); setPreviewUrl(null); } },
+              { panel: 'workflow', icon: Workflow, label: '工作流管理台', color: 'purple', onClick: () => { setAgentPanel(null); setShowWorkflowStudio(prev => !prev); setEditorFile(null); setPreviewImage(null); setPreviewUrl(null); } },
+              { panel: 'ui', icon: Layout, label: 'UI 组件库', color: 'sky', onClick: () => { setAgentPanel(current => current === 'ui' ? null : 'ui'); setPreviewUrl(null); } },
+              { panel: 'migration', icon: Download, label: '迁移中心', color: 'amber', onClick: () => { setAgentPanel(current => current === 'migration' ? null : 'migration'); setPreviewUrl(null); } },
+              { panel: 'capabilities', icon: Cpu, label: '能力中心', color: 'violet', onClick: () => { setAgentPanel(current => current === 'capabilities' ? null : 'capabilities'); setPreviewUrl(null); } },
+              { panel: 'browser', icon: Globe, label: '内置浏览器', color: 'emerald', onClick: () => { setAgentPanel(current => current === 'browser' ? null : 'browser'); setPreviewUrl(null); } },
+              { panel: 'manual', icon: HelpCircle, label: '命令手册 / F1', color: '', onClick: () => openManualCenter(input) },
+              { panel: 'settings', icon: Settings2, label: '偏好设置', color: '', onClick: () => setShowSettings(!showSettings) },
+              ].map(({ panel, icon: Icon, label, color, onClick }) => {
+                const isActive = agentPanel === panel || (panel === 'workflow' && showWorkflowStudio) || (panel === 'api' && showApiManager);
+                const colorMap: Record<string, string> = {
+                  cyan: 'hover:text-cyan-300',
+                  blue: 'hover:text-blue-300',
+                  green: 'hover:text-emerald-300',
+                  purple: 'hover:text-purple-300',
+                  sky: 'hover:text-sky-300',
+                  amber: 'hover:text-amber-300',
+                  violet: 'hover:text-violet-300',
+                  emerald: 'hover:text-emerald-300',
+                };
+                const activeColorMap: Record<string, string> = {
+                  cyan: 'border-cyan-400/20 bg-cyan-400/12 text-cyan-100',
+                  blue: 'border-blue-400/20 bg-blue-400/12 text-blue-100',
+                  green: 'border-emerald-400/20 bg-emerald-400/12 text-emerald-100',
+                  purple: 'border-purple-400/20 bg-purple-400/12 text-purple-100',
+                  sky: 'border-sky-400/20 bg-sky-400/12 text-sky-100',
+                  amber: 'border-amber-400/20 bg-amber-400/12 text-amber-100',
+                  violet: 'border-violet-400/20 bg-violet-400/12 text-violet-100',
+                  emerald: 'border-emerald-400/20 bg-emerald-400/12 text-emerald-100',
+                };
+                return (
+                  <div key={panel} className="group relative">
+                    <div
+                      onClick={onClick}
+                      title={label}
+                      className={`flex h-9 w-9 items-center justify-center rounded-xl border border-transparent text-[var(--text-secondary)] transition-all duration-150 ${
+                        isActive && color
+                          ? activeColorMap[color]
+                          : `border-transparent ${color ? colorMap[color] : 'hover:text-[var(--text-primary)]'} hover:bg-[var(--surface-muted)]`
+                      }`}
+                    >
+                      <Icon size={18} />
+                    </div>
+                  </div>
+                );
+              })}
+              </div>
+            )}
+
+            <div className="group relative mt-auto flex w-full items-center justify-center pt-4">
+              <div
+                onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+                title={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+                className="shell-surface-soft flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border shell-border text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]"
+              >
+                {sidebarCollapsed ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
+              </div>
             </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">API 管理</span>
-          </div>
-          <div className="group relative"
-            onClick={() => { openAgentPanel('prompts'); setPreviewUrl(null); }}
-          >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] transition-all ${agentPanel === 'prompts' ? 'text-blue-400 bg-[var(--panel-border)]' : 'text-[var(--text-secondary)] hover:text-blue-400'}`}>
-              <FileText size={18} />
-            </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">Prompt 助手</span>
-          </div>
-          <div className="group relative"
-            onClick={() => { openAgentPanel('skills'); setPreviewUrl(null); }}
-          >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] transition-all ${agentPanel === 'skills' ? 'text-cyan-400 bg-[var(--panel-border)]' : 'text-[var(--text-secondary)] hover:text-cyan-400'}`}>
-              <Box size={18} />
-            </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">Skill Hub</span>
-          </div>
-          <div className="group relative"
-            onClick={() => { openAgentPanel('knowledge'); setPreviewUrl(null); }}
-          >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] transition-all ${agentPanel === 'knowledge' ? 'text-green-400 bg-[var(--panel-border)]' : 'text-[var(--text-secondary)] hover:text-green-400'}`}>
-              <Database size={18} />
-            </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">知识库</span>
-          </div>
-          <div className="group relative"
-            onClick={() => {
-              setAgentPanel(null);
-              setShowWorkflowStudio(prev => !prev);
-              setEditorFile(null);
-              setPreviewImage(null);
-              setPreviewUrl(null);
-            }}
-          >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] transition-all ${showWorkflowStudio ? 'text-purple-300 bg-[var(--panel-border)]' : 'text-[var(--text-secondary)] hover:text-purple-300'}`}>
-              <Workflow size={18} />
-            </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">工作流工作台</span>
-          </div>
-          <div className="group relative"
-            onClick={() => { openAgentPanel('ui'); setPreviewUrl(null); }}
-          >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] transition-all ${agentPanel === 'ui' ? 'text-sky-300 bg-[var(--panel-border)]' : 'text-[var(--text-secondary)] hover:text-sky-300'}`}>
-              <Component size={18} />
-            </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">UI 组件库</span>
-          </div>
-          <div className="group relative"
-            onClick={() => { openAgentPanel('migration'); setPreviewUrl(null); }}
-          >
-            <div className={`w-10 h-10 rounded-full flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] transition-all ${agentPanel === 'migration' ? 'text-amber-300 bg-[var(--panel-border)]' : 'text-[var(--text-secondary)] hover:text-amber-300'}`}>
-              <Download size={18} />
-            </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">迁移中心</span>
-          </div>
-          <div className="group relative"
-            onClick={() => openManualCenter(input)}
-          >
-            <div className="w-10 h-10 rounded-full text-[var(--text-secondary)] flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] hover:text-[var(--text-primary)] transition-all">
-              <HelpCircle size={18} />
-            </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">命令手册 / F1</span>
-          </div>
-          <div className="group relative"
-            onClick={() => setShowSettings(!showSettings)}
-          >
-            <div className="w-10 h-10 rounded-full text-[var(--text-secondary)] flex items-center justify-center cursor-pointer hover:bg-[var(--panel-border)] hover:text-[var(--text-primary)] transition-all">
-              <Settings2 size={18} />
-            </div>
-            <span className="absolute left-14 top-1/2 -translate-y-1/2 px-2.5 py-1 rounded-lg bg-black/80 text-white text-[11px] whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100 pointer-events-none z-50 shadow-lg border border-white/10">偏好设置</span>
           </div>
         </div>
       </div>
 
-      <UIModal open={!!agentPanel} className="h-[92vh] max-w-[1660px] bg-[linear-gradient(180deg,rgba(11,16,29,0.98),rgba(7,11,21,0.99))]">
+      <UIModal open={!!agentPanel} className="h-[92vh] max-w-[1660px]">
         <div className="flex h-full flex-col">
           <div className="flex items-start justify-between gap-6 border-b border-[var(--panel-border)] px-8 py-6">
             <div className="min-w-0">
-              <div className="text-[11px] uppercase tracking-[0.24em] text-[var(--text-secondary)]">Management Page</div>
+              <div className="text-[11px] uppercase tracking-[0.24em] text-[var(--text-secondary)]">管理台</div>
               <h2 className="mt-2 text-2xl font-semibold text-[var(--text-primary)]">{agentPanelTitle}</h2>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--text-secondary)]">{agentPanelDescription}</p>
             </div>
             <button
               onClick={() => setAgentPanel(null)}
-              className="rounded-full border border-[var(--panel-border)] bg-white/5 p-2 text-[var(--text-secondary)] transition-colors hover:bg-white/10 hover:text-[var(--text-primary)]"
+              className="shell-surface-soft rounded-full border border-[var(--panel-border)] p-2 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]"
             >
               <X size={18} />
             </button>
           </div>
           <div className="min-h-0 flex-1 overflow-hidden px-5 pb-5">
             <div className="h-full overflow-hidden rounded-[1.75rem] border border-[var(--panel-border)] bg-[var(--panel-bg)]/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-              {agentPanel === 'context' && (
-                <ContextVaultPanel
-                  onOpenFile={openEditorPath}
-                  onInsertToInput={(value) => setInput(prev => prev.trim() ? `${prev}\n${value}` : value)}
-                />
-              )}
-              {agentPanel === 'prompts' && <PromptPanel />}
-              {agentPanel === 'skills' && <SkillPanel />}
-              {agentPanel === 'knowledge' && <KnowledgePanel />}
-              {agentPanel === 'ui' && <UIShowcasePanel />}
-              {agentPanel === 'migration' && <AgentMigrationPanel />}
+              <React.Suspense fallback={<PanelLoader />}>
+                {agentPanel === 'context' && (
+                  <ContextVaultPanel
+                    activeSessionId={activeSessionId}
+                    onOpenFile={openEditorPath}
+                    onInsertToInput={(value) => setInput(prev => prev.trim() ? `${prev}\n${value}` : value)}
+                  />
+                )}
+                {agentPanel === 'prompts' && <PromptPanel />}
+                {agentPanel === 'skills' && <SkillPanel />}
+                {agentPanel === 'knowledge' && <KnowledgePanel />}
+                {agentPanel === 'ui' && <UIShowcasePanel />}
+                {agentPanel === 'migration' && <AgentMigrationPanel />}
+                {agentPanel === 'capabilities' && <CapabilityPanel />}
+                {agentPanel === 'browser' && <BrowserPanel />}
+              </React.Suspense>
             </div>
           </div>
         </div>
       </UIModal>
 
-      <UIModal open={!!editorFile} className="h-[92vh] max-w-[1580px] bg-[linear-gradient(180deg,rgba(12,18,31,0.98),rgba(8,12,24,0.99))]">
+      <UIIntentRenderer
+        intent={uiIntent}
+        onClose={closeUiIntent}
+        onAction={handleUiIntentAction}
+        isStreaming={streamingIntentId !== null && uiIntent?.id === streamingIntentId}
+      />
+
+      <UIModal open={!!editorFile} className="h-[92vh] max-w-[1580px]">
         {editorFile && (
           <div className="flex h-full flex-col overflow-hidden">
             <div className="flex items-center justify-between gap-4 border-b border-[var(--panel-border)] px-6 py-4">
@@ -1357,7 +2149,7 @@ function App() {
         )}
       </UIModal>
 
-      <UIModal open={!!previewImage} className="h-[88vh] max-w-[1320px] bg-[linear-gradient(180deg,rgba(12,18,31,0.98),rgba(8,12,24,0.99))]">
+      <UIModal open={!!previewImage} className="h-[88vh] max-w-[1320px]">
         {previewImage && (
           <div className="flex h-full flex-col overflow-hidden">
             <div className="flex items-center justify-between gap-4 border-b border-[var(--panel-border)] px-6 py-4">
@@ -1372,7 +2164,7 @@ function App() {
                 <X size={14} /> Close
               </button>
             </div>
-            <div className="flex-1 overflow-auto bg-black/20 p-6">
+            <div className="flex-1 overflow-auto bg-[color:color-mix(in_srgb,var(--surface-muted)_88%,transparent)] p-6">
               <div className="flex min-h-full items-center justify-center">
                 <img src={previewImage.src} alt={previewImage.file} className="max-w-full max-h-full object-contain rounded-[1.5rem] shadow-2xl" />
               </div>
@@ -1382,60 +2174,62 @@ function App() {
       </UIModal>
 
       {/* Main Area */}
-      <div ref={mainAreaRef} className="flex-1 flex relative overflow-hidden p-5 z-10 w-full min-w-0">
+      <div ref={mainAreaRef} className="relative z-10 flex w-full min-w-0 flex-1 overflow-hidden px-3 pb-3 pt-8">
         
         {/* Left Column: Terminal & Input */}
-        <div className="min-w-[25rem] flex-1 flex flex-col relative transition-all duration-300">
+        <div className="relative flex min-w-[25rem] flex-1 flex-col transition-none">
         
         {/* Terminal Area with Header */}
-        <div className="flex-1 glass-panel rounded-3xl overflow-hidden relative shadow-2xl min-h-0 flex flex-col mb-4">
+        <div className="shell-panel relative mb-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.4rem] border shell-border shadow-[0_18px_40px_-28px_var(--shadow-color)]">
           
           {/* Terminal Header */}
-          <div className="h-10 bg-[var(--panel-bg)]/50 border-b border-[var(--panel-border)] flex items-center justify-between px-4 shrink-0 z-10 backdrop-blur-md">
-            <div className="flex items-center gap-2 text-[var(--text-secondary)]">
-              <TerminalSquare size={14} />
-              <span className="text-xs font-medium text-[var(--text-primary)]">
-                {sessions.find(s => s.id === activeSessionId)?.name || 'Terminal'}
+          <div className="shell-surface z-10 flex h-11 shrink-0 items-center justify-between border-b shell-border px-4">
+            <div className="flex shrink-0 items-center gap-4 text-[var(--text-secondary)]">
+                  <div className="shell-surface-soft flex h-7 w-7 items-center justify-center rounded-lg border shell-border">
+                <TerminalSquare size={14} />
+              </div>
+              <span className="whitespace-nowrap text-[15px] font-semibold text-[var(--text-primary)]">
+                {activeSession?.name || 'Terminal'}
               </span>
               {(analytics.cost !== undefined || analytics.tokens !== undefined) && (
-                <div className="ml-4 flex items-center gap-3 text-[10px] font-mono bg-[var(--panel-border)]/50 px-2 py-0.5 rounded-full border border-[var(--panel-border)]">
+                <div className="shell-surface-soft ml-2 hidden items-center gap-3 rounded-full border shell-border px-3 py-1 text-[10px] font-mono lg:flex">
                   {analytics.tokens !== undefined && <span className="text-blue-400">{analytics.tokens.toLocaleString()} tkns</span>}
                   {analytics.cost !== undefined && <span className="text-green-400">${analytics.cost.toFixed(4)}</span>}
                 </div>
               )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="ml-4 flex min-w-0 items-center gap-2 overflow-x-auto no-scrollbar">
               <button
                 onClick={() => {
                   setPreviewUrl('http://localhost:3000')
                   setInputUrl('http://localhost:3000')
                 }}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-[var(--panel-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors text-[11px] font-bold"
+                className={shellToolbarButtonClass}
                 title="Preview Localhost"
               >
                 <Globe size={12} /> Web
               </button>
               <button
                 onClick={() => window.dispatchEvent(new CustomEvent('export-terminal', { detail: { format: 'md', sessionId: activeSessionId } }))}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-[var(--panel-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors text-[11px] font-bold"
+                className={shellToolbarButtonClass}
                 title="Export as Markdown"
               >
                 <Download size={12} /> MD
               </button>
               <button
                 onClick={() => window.dispatchEvent(new CustomEvent('export-terminal', { detail: { format: 'pdf', sessionId: activeSessionId } }))}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-[var(--panel-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors text-[11px] font-bold"
+                className={shellToolbarButtonClass}
                 title="Export as PDF"
               >
                 <Download size={12} /> PDF
               </button>
               <button
                 onClick={() => setShowExplorer(prev => !prev)}
-                className="flex items-center gap-1.5 px-2.5 py-1 rounded-md hover:bg-[var(--panel-border)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-colors text-[11px] font-bold"
+                className={shellToolbarButtonClass}
                 title={showExplorer ? '隐藏文件系统' : '打开文件系统'}
               >
                 {showExplorer ? <PanelRightClose size={12} /> : <PanelRightOpen size={12} />}
-                FILE
+                文件
               </button>
             </div>
           </div>
@@ -1451,13 +2245,15 @@ function App() {
                   visibility: s.id === activeSessionId ? 'visible' : 'hidden'
                 }}
               >
-                <TerminalView 
-                  id={s.id} 
+                <TerminalView
+                  id={s.id}
                   name={s.name}
                   agentId={s.agentId}
-                  isActive={s.id === activeSessionId} 
-                  fontSize={fontSize} 
+                  isActive={s.id === activeSessionId}
+                  fontSize={fontSize}
                   themeName={theme}
+                  autoCaptureTerminal={autoCaptureTerminal}
+                  autoAnalyzeContext={autoAnalyzeContext}
                 />
               </div>
             ))}
@@ -1465,74 +2261,31 @@ function App() {
         </div>
 
         {/* Bottom Input Area (No longer absolute, part of flex layout) */}
-          <div className="w-full max-w-4xl mx-auto flex flex-col z-50 shrink-0 pb-2">
-          
-          {/* Quick Tools Bar */}
-          <div className="flex items-center gap-2 mb-3 w-full pl-2">
-            <div className="flex gap-2 overflow-x-auto no-scrollbar flex-1">
-              <button
-                onClick={() => openManualCenter(input)}
-                className="shrink-0 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[var(--accent)]/12 hover:bg-[var(--accent)]/18 border border-[var(--accent)]/30 text-[12px] font-medium text-[var(--text-primary)] transition-all shadow-sm backdrop-blur-md"
-                title="打开命令手册"
-              >
-                <HelpCircle size={13} className="text-[var(--accent)]" />
-                命令手册
-                <span className="rounded-md bg-black/20 px-1.5 py-0.5 text-[10px] font-mono text-[var(--text-secondary)]">F1</span>
-              </button>
-
-              {quickTools.map((tool, i) => (
-                <div key={i} className="relative group/tool shrink-0 flex items-center">
-                  <button 
-                    onClick={() => sendTerminalCommand(tool.cmd)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[var(--panel-bg)] hover:bg-[var(--panel-border-glow)] border border-[var(--panel-border)] text-[12px] font-mono text-[var(--text-secondary)] hover:text-[var(--text-primary)] transition-all shadow-sm backdrop-blur-md"
-                  >
-                    <Command size={12} className="opacity-50" />
-                    {tool.name}
-                  </button>
-                  {isEditingTools && (
-                    <button 
-                      onClick={() => removeTool(i)}
-                      className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-red-500 rounded-full text-white flex items-center justify-center shadow-lg"
-                    >
-                      <X size={10} />
-                    </button>
-                  )}
-                </div>
-              ))}
-              
-              {/* Add Custom Tool Button */}
-              <button 
-                onClick={() => setIsEditingTools(!isEditingTools)}
-                className="shrink-0 flex items-center justify-center w-7 h-7 rounded-xl bg-[var(--panel-bg)] border border-dashed border-[var(--text-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--text-primary)] transition-colors ml-1"
-                title="Edit Tools"
-              >
-                {isEditingTools ? <X size={14} /> : <Plus size={14} />}
-              </button>
-            </div>
-          </div>
+          <div className="z-50 mx-auto flex w-full max-w-5xl shrink-0 flex-col pb-1">
 
           {/* Add Tool Popover */}
           {isEditingTools && (
-            <div className="absolute bottom-[140px] mb-2 glass-panel rounded-xl p-4 shadow-2xl flex flex-col gap-3 w-64 animate-in fade-in slide-in-from-bottom-2 z-50">
+            <div className="absolute bottom-[140px] z-50 mb-2 flex w-72 flex-col gap-3 rounded-[1.5rem] border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-strong)_96%,var(--bg-base))] p-4 shadow-[0_24px_48px_-28px_var(--shadow-color)] animate-in fade-in slide-in-from-bottom-2">
               <div className="text-sm font-medium text-[var(--text-primary)]">Add Shortcut</div>
-              <input 
+              <UIInput
                 placeholder="Button Name (e.g. status)"
-                className="bg-black/20 border border-[var(--panel-border)] rounded-md px-3 py-1.5 text-xs text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                className="h-10 text-xs"
                 value={newToolName}
                 onChange={e => setNewToolName(e.target.value)}
               />
-              <input 
+              <UIInput
                 placeholder="Command (e.g. git status)"
-                className="bg-black/20 border border-[var(--panel-border)] rounded-md px-3 py-1.5 text-xs font-mono text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+                className="h-10 text-xs font-mono"
                 value={newToolCmd}
                 onChange={e => setNewToolCmd(e.target.value)}
               />
-              <button 
+              <UIButton
                 onClick={handleAddTool}
-                className="bg-[var(--accent)] text-white text-xs font-medium py-1.5 rounded-md hover:bg-blue-400 transition-colors"
+                tone="primary"
+                className="justify-center"
               >
                 Add
-              </button>
+              </UIButton>
             </div>
           )}
 
@@ -1578,35 +2331,86 @@ function App() {
           )}
 
           {/* Prompt Box */}
-          <div className="relative group w-full shrink-0" onPaste={handlePaste}>
-            <div className="absolute -inset-[1px] bg-gradient-to-r from-[var(--accent)] via-purple-500 to-[var(--accent)] rounded-2xl blur-md opacity-20 group-focus-within:opacity-50 transition duration-500 pointer-events-none"></div>
-            <div className="relative flex h-[11.25rem] flex-col glass-panel rounded-[1.75rem] shadow-2xl transition-all border border-[var(--panel-border)] bg-[var(--panel-bg)]/92 focus-within:bg-[var(--panel-bg)]">
+          <div className="relative w-full shrink-0" onPaste={handlePaste}>
+            <div className="shell-panel mb-3 flex items-center gap-2 overflow-x-auto rounded-[1.1rem] border shell-border px-3 py-2.5 shadow-[0_12px_28px_-22px_var(--shadow-color)] no-scrollbar">
+                <button
+                  onClick={() => openManualCenter(input)}
+                  className="inline-flex shrink-0 items-center gap-2 rounded-[0.95rem] border border-[var(--accent)]/22 bg-[var(--accent)]/8 px-3 py-1.5 text-[12px] font-medium text-[var(--text-primary)] transition-all hover:bg-[var(--accent)]/12"
+                  title="打开命令手册"
+                >
+                  <HelpCircle size={13} className="text-[var(--accent)]" />
+                  命令手册
+                  <span className="rounded-md bg-[var(--surface-muted)] px-1.5 py-0.5 text-[10px] font-mono text-[var(--text-secondary)]">F1</span>
+                </button>
+
+                {quickTools.map((tool, i) => (
+                  <div key={i} className="relative group/tool flex shrink-0 items-center">
+                    <button
+                      onClick={() => sendTerminalCommand(tool.cmd)}
+                      className="shell-surface-soft flex items-center gap-1.5 rounded-[0.95rem] border shell-border px-3 py-1.5 text-[12px] font-mono text-[var(--text-secondary)] transition-all hover:border-[var(--panel-border-glow)] hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]"
+                    >
+                      <Command size={12} className="opacity-50" />
+                      {tool.name}
+                    </button>
+                    {isEditingTools && (
+                      <button
+                        onClick={() => removeTool(i)}
+                        className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-white shadow-lg"
+                      >
+                        <X size={10} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+
+                {recentTerminalAgentCommands.slice(0, 3).map((item) => (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      setInput(item.command)
+                      focusInputBox()
+                    }}
+                    className="shell-surface-soft shrink-0 rounded-[0.95rem] border shell-border px-3 py-1.5 text-[11px] font-mono text-[var(--text-secondary)] transition-colors hover:border-[var(--panel-border-glow)] hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]"
+                    title={item.command}
+                  >
+                    {item.command}
+                  </button>
+                ))}
+
+                <button
+                  onClick={() => setIsEditingTools(!isEditingTools)}
+                  className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-[0.95rem] border border-dashed border-[var(--panel-border)] bg-transparent text-[var(--text-secondary)] transition-colors hover:border-[var(--panel-border-glow)] hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
+                  title="Edit Tools"
+                >
+                  {isEditingTools ? <X size={14} /> : <Plus size={14} />}
+                </button>
+            </div>
+
+            <div className="shell-panel relative flex flex-col overflow-hidden rounded-[1.25rem] border shell-border shadow-[0_16px_32px_-24px_var(--shadow-color)] transition-all focus-within:border-[var(--panel-border-glow)]">
               {pendingImages.length > 0 && (
-                <div className="px-5 pt-4">
+                <div className="px-4 pb-1 pt-3">
                   <div className="flex max-w-full gap-2 overflow-x-auto no-scrollbar pb-1">
                     {pendingImages.map((pendingImage) => (
-                      <div key={pendingImage.id} className="inline-flex min-w-0 shrink-0 max-w-full items-center gap-3 rounded-full border border-[var(--panel-border)] bg-white/5 px-2 py-2 shadow-[0_12px_30px_-22px_rgba(0,0,0,0.65)] backdrop-blur-xl">
+                      <div key={pendingImage.id} className="shell-surface-soft inline-flex min-w-0 max-w-full shrink-0 items-center gap-2 rounded-full border shell-border px-2 py-1.5 shadow-[0_10px_24px_-24px_var(--shadow-color)]">
                         <button
                           type="button"
                           onClick={() => setPreviewImage({ file: pendingImage.name, src: pendingImage.src })}
-                          className="flex min-w-0 items-center gap-3 text-left"
+                          className="flex min-w-0 items-center gap-2 text-left"
                           title="查看大图"
                         >
                           <img
                             src={pendingImage.src}
                             alt={pendingImage.name}
-                            className="h-11 w-11 rounded-full border border-white/10 object-cover shadow-lg"
+                            className="h-8 w-8 rounded-full border border-[var(--panel-border)] object-cover"
                           />
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
-                              <span className="truncate text-sm font-semibold text-[var(--text-primary)]">{pendingImage.name}</span>
-                              <span className="rounded-full bg-[var(--accent)]/12 px-2 py-0.5 text-[10px] font-mono uppercase tracking-[0.22em] text-[var(--accent)]">
+                              <span className="max-w-[10rem] truncate text-[13px] font-semibold text-[var(--text-primary)]">{pendingImage.name}</span>
+                              <span className="rounded-full bg-[var(--accent)]/12 px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-[0.18em] text-[var(--accent)]">
                                 image
                               </span>
                             </div>
-                            <div className="mt-0.5 truncate text-xs text-[var(--text-secondary)]">
-                              {pendingImage.width && pendingImage.height ? `${pendingImage.width}×${pendingImage.height}` : '图片已就绪'}
-                              {' · '}
+                            <div className="truncate text-[11px] text-[var(--text-secondary)]">
                               {(pendingImage.byteSize / 1024).toFixed(1)} KB
                             </div>
                           </div>
@@ -1614,18 +2418,18 @@ function App() {
                         <button
                           type="button"
                           onClick={() => setPreviewImage({ file: pendingImage.name, src: pendingImage.src })}
-                          className="rounded-full p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-white/6 hover:text-[var(--text-primary)]"
+                          className="rounded-full p-1 text-[var(--text-secondary)] transition-colors hover:bg-[var(--surface-muted)] hover:text-[var(--text-primary)]"
                           title="打开大图预览"
                         >
-                          <Eye size={15} />
+                          <Eye size={14} />
                         </button>
                         <button
                           type="button"
                           onClick={() => setPendingImages(prev => prev.filter(item => item.id !== pendingImage.id))}
-                          className="rounded-full p-1.5 text-[var(--text-secondary)] transition-colors hover:bg-red-500/10 hover:text-red-400"
+                          className="rounded-full p-1 text-[var(--text-secondary)] transition-colors hover:bg-red-500/10 hover:text-red-400"
                           title="移除图片"
                         >
-                          <X size={15} />
+                          <X size={14} />
                         </button>
                       </div>
                     ))}
@@ -1633,54 +2437,58 @@ function App() {
                 </div>
               )}
 
-              <textarea
-                ref={textareaRef}
-                className={`w-full bg-transparent border-none outline-none text-[var(--text-primary)] text-[13px] font-mono placeholder:text-[var(--text-secondary)] resize-none overflow-y-auto px-5 pb-3 leading-7 no-scrollbar ${pendingImages.length > 0 ? 'h-[60px] pt-3' : 'h-[118px] pt-5'}`}
-                placeholder="Ask Agent，输入命令，或直接输入“查看目录 / 安装依赖 / 代码审查”..."
-                value={input}
-                onChange={(e) => handleInputChange(e.target.value)}
-                onCompositionStart={() => {
-                  setIsInputComposing(true)
-                  updateSuggestions([])
-                }}
-                onCompositionEnd={(e) => {
-                  setIsInputComposing(false)
-                  void handleInputChange(e.currentTarget.value, { force: true })
-                }}
-                onKeyDown={handleKeyDown}
-                autoFocus
-              />
+                <textarea
+                  ref={textareaRef}
+                  className={`w-full resize-none overflow-y-auto border-none bg-transparent px-6 pb-2 text-[14px] leading-7 tracking-[0.01em] text-[var(--text-primary)] outline-none no-scrollbar placeholder:text-[var(--text-secondary)] ${pendingImages.length > 0 ? 'h-[104px] pt-3' : 'h-[156px] pt-7'} font-sans`}
+                  placeholder="Ask Agent, 输入命令，或直接输入“查看目录 / 安装依赖 / 代码审查”..."
+                  value={input}
+                  onChange={(e) => handleInputChange(e.target.value)}
+                  onCompositionStart={() => {
+                    setIsInputComposing(true)
+                    updateSuggestions([])
+                  }}
+                  onCompositionEnd={(e) => {
+                    setIsInputComposing(false)
+                    void handleInputChange(e.currentTarget.value, { force: true })
+                  }}
+                  onKeyDown={handleKeyDown}
+                  autoFocus
+                />
 
-              {/* Bottom Toolbar */}
-              <div className="flex items-center justify-between px-4 pb-4 pt-2 border-t border-transparent group-focus-within:border-[var(--panel-border)]/50 transition-colors">
-                 <div className="flex items-center gap-2 pl-1 opacity-70">
-                    <Sparkles size={16} className="text-[var(--accent)]" />
-                    <span className="text-[11px] text-[var(--text-secondary)] font-sans tracking-wide">Tab 补全 · ↑↓ 切换候选 · Ctrl+R 历史 · Ctrl+T 文件 · Ctrl+V 粘贴图片</span>
-                 </div>
-                 
-                 <div className="flex items-center gap-2">
-                   {input.length > 0 && (
-                     <button 
-                       onClick={() => { 
-                         setInput(''); 
-                         updateSuggestions([]); 
+                {/* Bottom Toolbar */}
+                <div className="flex items-center justify-between gap-3 border-t border-[color:color-mix(in_srgb,var(--panel-border)_70%,transparent)] px-5 py-3 transition-colors">
+                   <div className="flex min-w-0 flex-1 items-center gap-2 pl-0.5">
+                      <Sparkles size={15} className="text-[var(--accent)]" />
+                      <span className="truncate text-[11px] font-medium tracking-[0.01em] text-[var(--text-secondary)]">Tab 补全 · ↑↓ 切换候选 · Ctrl+R 历史 · Ctrl+T 文件 · Ctrl+V 粘贴图片</span>
+                   </div>
+
+                   <div className="flex items-center gap-2">
+                     {input.length > 0 && (
+                       <button
+                         onClick={() => {
+                         setInput('');
+                         updateSuggestions([]);
                          textareaRef.current?.focus();
-                       }}
-                       className="px-2.5 py-1.5 rounded-lg text-[12px] font-medium text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--panel-border)] transition-all flex items-center gap-1.5"
-                       title="Clear input"
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded-[0.95rem] border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 py-1.5 text-[12px] font-medium text-[var(--text-secondary)] transition-all hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]"
+                        title="Clear input"
+                      >
+                        <X size={13} /> Clear
+                       </button>
+                     )}
+                      <button
+                        onClick={handleSend}
+                        className={`inline-flex min-w-[8.5rem] items-center justify-center gap-2 rounded-[1rem] border px-4 py-2 text-[13px] font-medium transition-all ${
+                          input.trim() || pendingImages.length > 0
+                           ? 'border-[var(--accent)]/24 bg-[color:color-mix(in_srgb,var(--accent)_28%,#1a1716)] text-white shadow-[0_14px_24px_-18px_rgba(115,133,230,0.36)] hover:brightness-105'
+                           : 'border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)]'
+                       }`}
                      >
-                       <X size={14} /> Clear
+                       <span>Send</span>
+                       <Send size={14} />
                      </button>
-                   )}
-                   <button 
-                     onClick={handleSend}
-                     className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-2 ${input.trim() || pendingImages.length > 0 ? 'bg-[var(--accent)] text-white shadow-md hover:opacity-90' : 'bg-[var(--panel-border)] text-[var(--text-secondary)]'}`}
-                   >
-                     <span className="text-[13px] font-medium">Send</span>
-                     <Send size={14} />
-                   </button>
-                 </div>
-              </div>
+                   </div>
+                </div>
             </div>
           </div>
         </div>
@@ -1690,28 +2498,27 @@ function App() {
 
         {showWorkspace && (
           <div className="relative w-3 shrink-0 cursor-col-resize" onPointerDown={beginPanelResize('workspace')}>
-            <div className="absolute inset-y-10 left-1/2 w-px -translate-x-1/2 rounded-full bg-[var(--panel-border)]" />
-            <div className="absolute left-1/2 top-1/2 h-20 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--surface-muted)] shadow-[0_0_0_1px_var(--panel-border)]" />
+            <div className={splitterTrackClass} />
+            <div className={splitterThumbClass} />
           </div>
         )}
 
         {showWorkspace && previewUrl && (
           <div
-            className="shrink-0 flex flex-col glass-panel rounded-[2rem] overflow-hidden relative shadow-2xl min-h-0 animate-in slide-in-from-right-4 duration-300 border border-[var(--panel-border)] bg-[var(--panel-bg)]/80 backdrop-blur-xl"
+            className="relative min-h-0 shrink-0 animate-in slide-in-from-right-4 duration-300 overflow-hidden rounded-[1.4rem] border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--panel-bg)_94%,transparent)] shadow-[0_18px_40px_-28px_var(--shadow-color)]"
             style={{ width: `${workspaceWidth}px` }}
           >
             <div className="flex-1 flex flex-col overflow-hidden">
-              <div className="h-12 flex items-center justify-between px-6 border-b border-[var(--panel-border)] bg-[var(--panel-bg)] shrink-0">
+              <div className="flex h-11 shrink-0 items-center justify-between border-b border-[var(--panel-border)] bg-[var(--surface-muted)] px-4">
                 <div className="flex items-center gap-3 text-sm font-mono text-[var(--text-secondary)] overflow-hidden">
                   <Globe size={14} className="text-blue-400 shrink-0" />
                   <span className="text-[var(--text-primary)] font-medium">Browser</span>
                 </div>
                 <div className="flex gap-3 shrink-0">
-                  <input
-                    type="text"
+                  <UIInput
                     value={inputUrl}
                     onChange={(e) => setInputUrl(e.target.value)}
-                    className="bg-black/20 border border-[var(--panel-border)] rounded-md px-3 py-1 text-xs text-[var(--text-primary)] outline-none focus:border-blue-500/50 w-48"
+                    className="h-9 w-52 text-xs"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         const target = e.currentTarget;
@@ -1724,7 +2531,7 @@ function App() {
                     }}
                   />
 
-                  <div className="flex items-center gap-1.5 px-2 bg-black/10 rounded-full border border-[var(--panel-border)]">
+                  <div className="flex items-center gap-1.5 rounded-full border border-[var(--panel-border)] bg-[var(--surface-strong)] px-2">
                     <button onClick={() => setWebviewZoom(Math.max(0.1, webviewZoom - 0.1))} className="text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
                       <ZoomOut size={12} />
                     </button>
@@ -1734,10 +2541,10 @@ function App() {
                     </button>
                   </div>
 
-                  <button onClick={toggleDomPicker} className={`text-xs font-mono px-3 py-1.5 rounded-full border transition-colors flex items-center gap-1.5 ${isPickerActive ? 'bg-blue-500/20 text-blue-400 border-blue-500/50 shadow-[0_0_10px_rgba(59,130,246,0.3)]' : 'bg-transparent text-[var(--text-secondary)] border-[var(--panel-border)] hover:text-[var(--text-primary)]'}`}>
+                  <button onClick={toggleDomPicker} className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-mono transition-colors ${isPickerActive ? 'border-blue-500/38 bg-blue-500/12 text-blue-300 shadow-[0_10px_24px_-18px_rgba(59,130,246,0.4)]' : 'border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'}`}>
                     <MousePointer2 size={14} className={isPickerActive ? 'animate-pulse' : ''} /> {isPickerActive ? 'Picking...' : 'Pick'}
                   </button>
-                  <button onClick={() => setPreviewUrl(null)} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
+                  <button onClick={() => setPreviewUrl(null)} className="flex items-center gap-1.5 rounded-full border border-red-500/20 bg-red-500/10 px-4 py-1.5 text-xs font-mono text-red-300 transition-colors hover:bg-red-500/16">
                     <PanelRightClose size={14} /> Close
                   </button>
                 </div>
@@ -1762,12 +2569,12 @@ function App() {
         {showExplorer && (
           <>
             <div className="relative w-3 shrink-0 cursor-col-resize" onPointerDown={beginPanelResize('explorer')}>
-              <div className="absolute inset-y-10 left-1/2 w-px -translate-x-1/2 rounded-full bg-[var(--panel-border)]" />
-              <div className="absolute left-1/2 top-1/2 h-20 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-[var(--surface-muted)] shadow-[0_0_0_1px_var(--panel-border)]" />
+              <div className={splitterTrackClass} />
+              <div className={splitterThumbClass} />
             </div>
 
             <div
-              className="h-full shrink-0 overflow-hidden rounded-[2rem] shadow-2xl border border-[var(--panel-border)] bg-[var(--panel-bg)]/80 backdrop-blur-xl"
+              className="h-full shrink-0 overflow-hidden rounded-[1.4rem] border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--panel-bg)_94%,transparent)] shadow-[0_18px_40px_-28px_var(--shadow-color)]"
               style={{ width: `${explorerWidth}px` }}
             >
               <FileExplorerPanel
@@ -1784,9 +2591,6 @@ function App() {
                   setNewFileName('untitled.txt')
                 }}
                 onCreateFolder={handleCreateFolder}
-                onDelete={handleDeletePath}
-                onCopyPath={copyPathToClipboard}
-                onToggleVisibility={() => setShowExplorer(false)}
               />
             </div>
           </>
@@ -1794,8 +2598,8 @@ function App() {
       </div>
 
       {/* Settings Popover */}
-      {showSettings && (
-        <div className="absolute bottom-6 left-20 z-50 flex max-h-[calc(100vh-3rem)] w-[26rem] flex-col overflow-hidden rounded-3xl glass-panel animate-in fade-in slide-in-from-bottom-4">
+      <UIModal open={showSettings} className="h-[82vh] max-w-[980px] bg-[color:var(--surface-strong)]">
+        <div className="flex h-full min-h-0 flex-col">
           <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-6 py-5">
             <h3 className="text-lg font-medium text-[var(--text-primary)]">偏好设置</h3>
             <button onClick={() => setShowSettings(false)} className="text-[var(--text-secondary)] hover:text-[var(--text-primary)]"><X size={16} /></button>
@@ -1819,8 +2623,8 @@ function App() {
                       <div className="mt-2 text-[11px] leading-5 text-[var(--text-secondary)]">{t.description}</div>
                       <div className="mt-3 flex gap-1">
                         <span className="h-2.5 flex-1 rounded-full" style={{ backgroundColor: t.accent, opacity: 0.9 }} />
-                        <span className="h-2.5 flex-1 rounded-full bg-white/10" />
-                        <span className="h-2.5 flex-1 rounded-full bg-black/25" />
+                        <span className="h-2.5 flex-1 rounded-full bg-[var(--surface-muted)]" />
+                        <span className="h-2.5 flex-1 rounded-full bg-[var(--surface-strong)]" />
                       </div>
                     </button>
                   ))}
@@ -1844,7 +2648,7 @@ function App() {
                         <span className="h-3 w-3 rounded-full" style={{ backgroundColor: t.accent }}></span>
                       </div>
                       <div className="mt-2 text-[11px] leading-5 text-[var(--text-secondary)]">{t.description}</div>
-                      <div className="mt-3 rounded-xl border border-[var(--panel-border)] bg-black/10 px-2.5 py-2">
+                      <div className="mt-3 rounded-xl border border-[var(--panel-border)] bg-[var(--surface-strong)] px-2.5 py-2">
                         <div
                           className="truncate text-[12px] text-[var(--text-primary)]"
                           style={{
@@ -1858,8 +2662,8 @@ function App() {
                         </div>
                         <div className="mt-2 flex items-center gap-1">
                           <span className="h-2.5 flex-1 rounded-full" style={{ backgroundColor: t.accent, opacity: 0.92 }} />
-                          <span className="h-2.5 flex-1 rounded-full bg-white/10" />
-                          <span className="h-2.5 flex-1 rounded-full bg-black/25" />
+                          <span className="h-2.5 flex-1 rounded-full bg-[var(--surface-muted)]" />
+                          <span className="h-2.5 flex-1 rounded-full bg-[var(--surface-strong)]" />
                         </div>
                       </div>
                     </button>
@@ -1880,7 +2684,7 @@ function App() {
                     </div>
                   </div>
                   {activeThemePreset.terminalOptions && (
-                    <div className="mt-3 rounded-xl border border-[var(--panel-border)] bg-black/10 px-3 py-2">
+                    <div className="mt-3 rounded-xl border border-[var(--panel-border)] bg-[var(--surface-strong)] px-3 py-2">
                       <div
                         className="text-[12px] text-[var(--text-primary)]"
                         style={{
@@ -1913,10 +2717,51 @@ function App() {
                   <span className="w-8 text-center text-sm font-mono text-[var(--text-primary)]">{fontSize}px</span>
                 </div>
               </div>
+
+              <div>
+                <label className="mb-3 block text-xs uppercase tracking-wider text-[var(--text-secondary)]">上下文管理</label>
+                <div className="space-y-3">
+                  {/* Auto Capture Terminal Output */}
+                  <div className="flex items-center justify-between rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] p-3">
+                    <div>
+                      <div className="text-sm font-medium text-[var(--text-primary)]">自动捕获终端输出</div>
+                      <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">自动将终端输出保存到上下文资产</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const newVal = !autoCaptureTerminal
+                        setAutoCaptureTerminal(newVal)
+                        window.electronAPI?.storeSet('context:autoCaptureTerminal', newVal)
+                      }}
+                      className={`relative h-6 w-11 rounded-full transition-colors ${autoCaptureTerminal ? 'bg-[var(--accent)]' : 'bg-[var(--panel-border)]'}`}
+                    >
+                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${autoCaptureTerminal ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                    </button>
+                  </div>
+
+                  {/* Auto Analyze Context */}
+                  <div className="flex items-center justify-between rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] p-3">
+                    <div>
+                      <div className="text-sm font-medium text-[var(--text-primary)]">自动分析上下文</div>
+                      <div className="mt-0.5 text-[11px] text-[var(--text-secondary)]">命令执行后自动分析上下文内容</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const newVal = !autoAnalyzeContext
+                        setAutoAnalyzeContext(newVal)
+                        window.electronAPI?.storeSet('context:autoAnalyzeContext', newVal)
+                      }}
+                      className={`relative h-6 w-11 rounded-full transition-colors ${autoAnalyzeContext ? 'bg-[var(--accent)]' : 'bg-[var(--panel-border)]'}`}
+                    >
+                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${autoAnalyzeContext ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-      )}
+      </UIModal>
 
       {/* New File Modal */}
       {showNewFileModal && (
@@ -1952,28 +2797,44 @@ function App() {
       )}
 
       {showHelp && (
-        <CommandManualModal
-          quickTools={quickTools}
-          initialSearch={manualInitialSearch}
-          onClose={() => setShowHelp(false)}
-          onInsertCommand={insertManualCommand}
-          onRunCommand={runManualCommand}
-          onPinTool={addQuickTool}
-        />
+        <React.Suspense fallback={
+          <div className="w-full h-full flex items-center justify-center">
+            <Loader2 size={24} className="text-[var(--accent)] animate-spin" />
+          </div>
+        }>
+          <CommandManualModal
+            quickTools={quickTools}
+            initialSearch={manualInitialSearch}
+            onClose={() => setShowHelp(false)}
+            onInsertCommand={insertManualCommand}
+            onRunCommand={runManualCommand}
+            onPinTool={addQuickTool}
+          />
+        </React.Suspense>
       )}
 
       {showWorkflowStudio && (
-        <UIModal open={showWorkflowStudio} className="h-[92vh] max-w-[1660px] bg-[linear-gradient(180deg,rgba(11,16,29,0.98),rgba(7,11,21,0.99))]">
-          <WorkflowPanel
-            onInsertToInput={(value) => setInput(prev => prev.trim() ? `${prev}\n\n${value}` : value)}
-            onClose={() => setShowWorkflowStudio(false)}
-          />
+        <UIModal open={showWorkflowStudio} onClose={() => setShowWorkflowStudio(false)} className="h-[92vh] max-w-[1660px]">
+          <div className="h-full overflow-hidden rounded-[1.75rem] border border-[var(--panel-border)] bg-[var(--panel-bg)]/72 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <React.Suspense fallback={<PanelLoader />}>
+              <WorkflowPanel
+                onInsertToInput={(value) => setInput(prev => prev.trim() ? `${prev}\n\n${value}` : value)}
+                onClose={() => setShowWorkflowStudio(false)}
+              />
+            </React.Suspense>
+          </div>
         </UIModal>
       )}
 
       {/* API Manager Modal */}
       {showApiManager && (
-        <ApiManager onClose={() => setShowApiManager(false)} />
+        <React.Suspense fallback={
+          <div className="w-full h-full flex items-center justify-center">
+            <Loader2 size={24} className="text-[var(--accent)] animate-spin" />
+          </div>
+        }>
+          <ApiManager onClose={() => setShowApiManager(false)} />
+        </React.Suspense>
       )}
     </div>
   )

@@ -7,12 +7,14 @@ import { getPrompt, renderPrompt } from './prompt-manager';
 import { getSkill } from './skill-manager';
 import { buildRAGPrompt } from './knowledge-base';
 import { type EmbeddingConfig } from './vector-store';
+import { BrowserWindow } from 'electron'
+import * as contextStore from './context-store';
 import * as fs from 'node:fs';
 import { dirname } from 'node:path';
 
 export interface WorkflowNode {
   id: string;
-  type: 'start' | 'end' | 'llm' | 'skill' | 'knowledge' | 'prompt' | 'condition' | 'parallel' | 'code' | 'document';
+  type: 'start' | 'end' | 'llm' | 'skill' | 'knowledge' | 'prompt' | 'condition' | 'parallel' | 'code' | 'document' | 'workflow' | 'context' | 'browser';
   label: string;
   config: Record<string, unknown>;
   position?: { x: number; y: number };
@@ -62,6 +64,78 @@ function rowToWorkflow(row: WorkflowRow): Workflow {
     edges: JSON.parse(row.edges || '[]'),
     variables: JSON.parse(row.variables || '{}'),
   };
+}
+
+// ── Browser Execution (shared helper) ──────────────────────────────
+
+export async function executeBrowserScript(options: {
+  url: string;
+  script: string;
+  timeout?: number;
+}): Promise<string> {
+  const { url, script, timeout = 30000 } = options;
+
+  return new Promise((resolve, reject) => {
+    const bw = new BrowserWindow({
+      width: 1024,
+      height: 768,
+      show: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        partition: 'workflow-browser',
+      },
+    });
+
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try { bw.destroy(); } catch { /* ignore */ }
+        reject(new Error('Browser execution timed out'));
+      }
+    }, timeout);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      try { bw.destroy(); } catch { /* ignore */ }
+    };
+
+    const onLoad = () => {
+      if (settled) return;
+      bw.webContents.executeJavaScript(script).then(result => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          resolve(String(result ?? ''));
+        }
+      }).catch(err => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(new Error(`Script error: ${String(err)}`));
+        }
+      });
+    };
+
+    const onFail = (_e: Electron.Event, _code: number, desc: string) => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(new Error(`Failed to load: ${desc}`));
+      }
+    };
+
+    bw.webContents.once('did-finish-load', onLoad);
+    bw.webContents.once('did-fail-load', onFail);
+    bw.loadURL(url).catch(err => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(new Error(`Navigation error: ${String(err)}`));
+      }
+    });
+  });
 }
 
 // ── CRUD ──────────────────────────────────────────────────────────
@@ -115,6 +189,8 @@ export interface ExecutionContext {
   variables: Record<string, unknown>;
   results: Map<string, unknown>;
   logs: Array<{ nodeId: string; type: 'info' | 'error' | 'output'; message: string; timestamp: string }>;
+  /** Tracks nesting depth for nested workflow calls, prevents infinite recursion */
+  nestedDepth: number;
 }
 
 export interface ExecutionResult {
@@ -122,6 +198,13 @@ export interface ExecutionResult {
   output: unknown;
   logs: ExecutionContext['logs'];
   executionTimeMs: number;
+}
+
+/** Real-time execution status callback */
+export interface ExecutionStatusCallback {
+  onNodeStart?: (node: WorkflowNode) => void;
+  onNodeComplete?: (node: WorkflowNode, result: unknown) => void;
+  onLog?: (log: { nodeId: string; type: 'info' | 'error' | 'output'; message: string; timestamp: string }) => void;
 }
 
 export interface WorkflowRun {
@@ -181,6 +264,7 @@ async function executeNode(
   context: ExecutionContext,
   llmConfig: LLMConfig,
   embeddingConfig?: EmbeddingConfig,
+  nestedDepth = 0,
 ): Promise<unknown> {
   const timestamp = new Date().toISOString();
   context.logs.push({ nodeId: node.id, type: 'info', message: `Executing node: ${node.label}`, timestamp });
@@ -339,6 +423,135 @@ async function executeNode(
       }
     }
 
+    case 'context': {
+      // Retrieve context records as workflow input
+      const query = String(node.config.query || '');
+      const limit = Math.max(1, Math.min(Number(node.config.limit) || 10, 100));
+      const kind = typeof node.config.kind === 'string' ? node.config.kind : undefined;
+      const sourceType = typeof node.config.sourceType === 'string' ? node.config.sourceType : undefined;
+
+      // Interpolate variables into query
+      let renderedQuery = query;
+      for (const [key, val] of Object.entries(context.variables)) {
+        renderedQuery = renderedQuery.replaceAll(`{{${key}}}`, String(val));
+      }
+
+      const records = contextStore.queryRecords({
+        query: renderedQuery || undefined,
+        kind,
+        source_type: sourceType,
+        limit,
+      });
+
+      if (records.length === 0) {
+        return 'No context records found.';
+      }
+
+      const formatted = records.map(r =>
+        `[${r.kind}] ${r.title}\n${r.summary}`
+      ).join('\n\n---\n\n');
+
+      context.logs.push({ nodeId: node.id, type: 'output', message: `Retrieved ${records.length} context record(s)`, timestamp });
+      return formatted;
+    }
+
+    case 'workflow': {
+      const MAX_NESTED_DEPTH = 5;
+      const subWorkflowId = String(node.config.workflowId || '');
+      if (!subWorkflowId) {
+        return 'No workflow selected for nested execution.';
+      }
+      if (nestedDepth >= MAX_NESTED_DEPTH) {
+        const msg = `Nested workflow depth limit (${MAX_NESTED_DEPTH}) exceeded. Aborting nested execution of "${subWorkflowId}".`;
+        context.logs.push({ nodeId: node.id, type: 'error', message: msg, timestamp });
+        throw new Error(msg);
+      }
+
+      // Build sub-workflow input variables from context.variables
+      const subVariables: Record<string, unknown> = { ...context.variables };
+      const extraVars = node.config.variables as Record<string, unknown> | undefined;
+      if (extraVars) {
+        for (const [key, val] of Object.entries(extraVars)) {
+          const rendered = typeof val === 'string'
+            ? String(val).replace(/\{\{(\w+)\}\}/g, (_, vk) => String(subVariables[vk] ?? `{{${vk}}}`))
+            : val;
+          subVariables[key] = rendered;
+        }
+      }
+
+      const subContext: ExecutionContext = {
+        variables: subVariables,
+        results: new Map(),
+        logs: [],
+        nestedDepth: nestedDepth + 1,
+      };
+
+      context.logs.push({ nodeId: node.id, type: 'info', message: `Executing nested workflow: ${subWorkflowId} (depth ${nestedDepth + 1})`, timestamp });
+
+      const subResult = await executeWorkflow(subWorkflowId, llmConfig, subVariables, embeddingConfig);
+      if (!subResult.success) {
+        throw new Error(`Nested workflow "${subWorkflowId}" failed: ${subResult.output}`);
+      }
+
+      context.logs.push({
+        nodeId: node.id,
+        type: 'output',
+        message: `Nested workflow "${subWorkflowId}" completed in ${subResult.executionTimeMs}ms`,
+        timestamp,
+      });
+
+      // Forward sub-workflow output, also copy sub logs into parent context
+      for (const log of subResult.logs) {
+        if (log.nodeId) {
+          context.logs.push({
+            ...log,
+            nodeId: `${node.id} > ${log.nodeId}`,
+          });
+        }
+      }
+
+      return subResult.output;
+    }
+
+    case 'browser': {
+      // Execute a script in a browser (via BrowserPanel's webview or dedicated window)
+      const url = String(node.config.url || '');
+      const script = String(node.config.script || '');
+      const selector = String(node.config.selector || '');
+      const action = String(node.config.action || 'extract');
+      const timeoutMs = Math.max(1000, Math.min(Number(node.config.timeout) || 30000, 60000));
+
+      // Build the extraction script
+      let execScript: string;
+      if (action === 'extract' && selector) {
+        execScript = `
+(function() {
+  var els = document.querySelectorAll('${selector.replace(/'/g, "\\'")}');
+  return Array.from(els).map(function(el) { return el.textContent || el.innerText || ''; }).filter(Boolean).join('\\n');
+})()`;
+      } else if (action === 'html' && selector) {
+        execScript = `
+(function() {
+  var el = document.querySelector('${selector.replace(/'/g, "\\'")}');
+  return el ? el.innerHTML : '';
+})()`;
+      } else if (script) {
+        execScript = script;
+      } else {
+        execScript = `document.body ? document.body.innerText.substring(0, 5000) : ''`;
+      }
+
+      try {
+        const result = await executeBrowserScript({ url, script: execScript, timeout: timeoutMs });
+        context.logs.push({ nodeId: node.id, type: 'output', message: `Extracted ${result.length} chars`, timestamp });
+        return result;
+      } catch (err: unknown) {
+        const msg = `Browser extraction failed: ${String(err)}`;
+        context.logs.push({ nodeId: node.id, type: 'error', message: msg, timestamp });
+        return `Error: ${String(err)}`;
+      }
+    }
+
     default:
       return null;
   }
@@ -351,6 +564,7 @@ export async function executeWorkflow(
   llmConfig: LLMConfig,
   inputVariables?: Record<string, unknown>,
   embeddingConfig?: EmbeddingConfig,
+  statusCallback?: ExecutionStatusCallback,
 ): Promise<ExecutionResult> {
   const workflow = getWorkflow(workflowId);
   if (!workflow) throw new Error('Workflow not found');
@@ -360,6 +574,7 @@ export async function executeWorkflow(
     variables: { ...workflow.variables, ...inputVariables },
     results: new Map(),
     logs: [],
+    nestedDepth: 0,
   };
 
   const runId = generateId();
@@ -437,13 +652,37 @@ export async function executeWorkflow(
           message: `Skip node: ${node.label} (branch not activated)`,
           timestamp: new Date().toISOString(),
         });
+        statusCallback?.onLog?.({
+          nodeId,
+          type: 'info',
+          message: `Skip node: ${node.label} (branch not activated)`,
+          timestamp: new Date().toISOString(),
+        });
         continue;
       }
 
-      const result = await executeNode(node, context, llmConfig, embeddingConfig);
+      // Notify node start
+      statusCallback?.onNodeStart?.(node);
+      statusCallback?.onLog?.({
+        nodeId,
+        type: 'info',
+        message: `Starting: ${node.label}`,
+        timestamp: new Date().toISOString(),
+      });
+
+      const result = await executeNode(node, context, llmConfig, embeddingConfig, context.nestedDepth);
       context.results.set(nodeId, result);
       executedNodeIds.push(nodeId);
       activateOutgoingEdges(node, result);
+
+      // Invoke callbacks for real-time status
+      statusCallback?.onNodeComplete?.(node, result);
+      statusCallback?.onLog?.({
+        nodeId,
+        type: 'output',
+        message: `Completed: ${node.label}`,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     const endNodeId = workflow.nodes.find(node => node.type === 'end')?.id;
@@ -458,6 +697,27 @@ export async function executeWorkflow(
       result: JSON.stringify(finalResult),
       completed_at: new Date().toISOString(),
     });
+
+    // Store workflow result to context store
+    try {
+      const resultStr = typeof finalResult === 'string'
+        ? finalResult
+        : JSON.stringify(finalResult, null, 2);
+      const summary = resultStr.length > 2000 ? resultStr.substring(0, 2000) + '...' : resultStr;
+      contextStore.createRecord({
+        scope: 'project',
+        kind: 'summary',
+        title: `[Workflow] ${workflow.name}`,
+        summary,
+        salience: 0.7,
+        status: 'active',
+        source_type: 'workflow',
+        source_ref: workflowId,
+        evidence_refs: [],
+      });
+    } catch {
+      // Non-critical: don't fail workflow execution if context storage fails
+    }
 
     return { success: true, output: finalResult, logs: context.logs, executionTimeMs: executionTime };
   } catch (err: unknown) {
@@ -516,6 +776,12 @@ export function buildWorkflowAgentPrompt(workflowId: string): string {
       }
       if (node.type === 'condition') {
         return `按条件分支：${String(node.config.condition || 'custom condition')}`;
+      }
+      if (node.type === 'context') {
+        return `从上下文存储检索：${String(node.config.query || '未指定查询')}，类型：${String(node.config.kind || '全部')}`;
+      }
+      if (node.type === 'browser') {
+        return `从网页提取内容：${String(node.config.url || '未指定 URL')}，动作：${String(node.config.action || 'extract')}`;
       }
       return node.label;
     })();

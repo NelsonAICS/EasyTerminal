@@ -1,5 +1,7 @@
 // Database — SQLite-based persistent storage for Agent features
-// Tables: prompts, skills, knowledge_docs, knowledge_chunks, workflows
+// Tables: prompts, skills, knowledge_docs, knowledge_chunks, workflows,
+//         memory_records, context_snapshots, session_events, user_preferences,
+//         browser_sessions, browser_history
 
 import Database from 'better-sqlite3';
 import { join } from 'node:path';
@@ -104,6 +106,113 @@ function initializeTables(db: Database.Database) {
       completed_at TEXT,
       FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
     );
+
+    -- Structured memory records
+    CREATE TABLE IF NOT EXISTS memory_records (
+      id TEXT PRIMARY KEY,
+      scope TEXT DEFAULT 'session',
+      kind TEXT DEFAULT 'summary',
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      details TEXT DEFAULT '',
+      salience REAL DEFAULT 0.5,
+      status TEXT DEFAULT 'active',
+      source_type TEXT DEFAULT 'manual',
+      source_ref TEXT DEFAULT '',
+      evidence_refs TEXT DEFAULT '[]',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_records_scope_kind ON memory_records(scope, kind);
+    CREATE INDEX IF NOT EXISTS idx_memory_records_source_ref ON memory_records(source_ref);
+
+    -- Links between memory records
+    CREATE TABLE IF NOT EXISTS memory_links (
+      id TEXT PRIMARY KEY,
+      from_id TEXT NOT NULL,
+      to_id TEXT NOT NULL,
+      relation TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (from_id) REFERENCES memory_records(id) ON DELETE CASCADE,
+      FOREIGN KEY (to_id) REFERENCES memory_records(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_links_from_id ON memory_links(from_id);
+    CREATE INDEX IF NOT EXISTS idx_memory_links_to_id ON memory_links(to_id);
+
+    -- Context snapshots
+    CREATE TABLE IF NOT EXISTS context_snapshots (
+      id TEXT PRIMARY KEY,
+      session_id TEXT DEFAULT '',
+      task_id TEXT DEFAULT '',
+      version INTEGER DEFAULT 1,
+      summary_block TEXT NOT NULL,
+      token_estimate INTEGER DEFAULT 0,
+      drift_score REAL DEFAULT 0,
+      status TEXT DEFAULT 'active',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_context_snapshots_session_id ON context_snapshots(session_id);
+    CREATE INDEX IF NOT EXISTS idx_context_snapshots_task_id ON context_snapshots(task_id);
+
+    -- Session event log
+    CREATE TABLE IF NOT EXISTS session_events (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      payload TEXT DEFAULT '',
+      token_estimate INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_session_events_session_id ON session_events(session_id);
+
+    -- User preferences (learned from interactions)
+    CREATE TABLE IF NOT EXISTS user_preferences (
+      id TEXT PRIMARY KEY,
+      scope TEXT DEFAULT 'all',
+      dimension TEXT NOT NULL,
+      value TEXT NOT NULL,
+      weight REAL DEFAULT 0.1,
+      sample_count INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_prefs_scope_dim ON user_preferences(scope, dimension);
+
+    -- Browser sessions
+    CREATE TABLE IF NOT EXISTS browser_sessions (
+      id TEXT PRIMARY KEY,
+      url TEXT NOT NULL,
+      title TEXT DEFAULT '',
+      cookies TEXT DEFAULT '{}',
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Browser history
+    CREATE TABLE IF NOT EXISTS browser_history (
+      id TEXT PRIMARY KEY,
+      session_id TEXT,
+      url TEXT NOT NULL,
+      title TEXT DEFAULT '',
+      content TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_history_session ON browser_history(session_id);
+
+    -- Browser plugins (userscripts / extensions)
+    CREATE TABLE IF NOT EXISTS browser_plugins (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      match_pattern TEXT DEFAULT '*://*/*',
+      script TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_browser_plugins_enabled ON browser_plugins(enabled);
   `);
 
   ensureColumn(db, 'workflows', 'category', "TEXT DEFAULT 'general'");

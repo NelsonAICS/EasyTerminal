@@ -1,10 +1,14 @@
 import type { HTMLAttributes } from 'react';
 import { cn } from '../../lib/cn';
+import { radiusClass } from '../../lib/shadcn-tokens';
 
 export function UIPanel({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn('rounded-[1.75rem] border border-[var(--panel-border)] bg-[var(--surface-muted)]', className)}
+      className={cn(
+        `border border-[var(--panel-border)] bg-[var(--ui-card-bg)] shadow-[var(--ui-card-shadow)] ${radiusClass.xl}`,
+        className,
+      )}
       {...props}
     />
   );
@@ -12,13 +16,13 @@ export function UIPanel({ className, ...props }: HTMLAttributes<HTMLDivElement>)
 
 export function UISectionKicker({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
-    <div className={cn('text-[11px] tracking-[0.24em] text-white/30', className)} {...props} />
+    <div className={cn('text-[11px] tracking-[0.24em] text-[var(--ui-kicker)]', className)} {...props} />
   );
 }
 
 export function UITitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
   return (
-    <h3 className={cn('text-2xl font-semibold tracking-tight text-white', className)} {...props} />
+    <h3 className={cn('text-2xl font-semibold tracking-tight text-[var(--text-primary)]', className)} {...props} />
   );
 }
 
@@ -33,7 +37,7 @@ export function UIBadge({
       ? 'bg-emerald-500/12 text-emerald-200 border border-emerald-400/12'
       : tone === 'danger'
         ? 'bg-red-500/12 text-red-200 border border-red-400/10'
-        : 'bg-[var(--surface-muted)] text-white/70 border border-[var(--panel-border)]';
+        : 'bg-[var(--ui-badge-neutral-bg)] text-[var(--ui-badge-neutral-text)] border border-[var(--panel-border)]';
 
   return (
     <span

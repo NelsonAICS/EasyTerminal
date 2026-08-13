@@ -1,6 +1,7 @@
 import type { HTMLAttributes, ReactNode } from 'react';
 import { cn } from '../../lib/cn';
 import { UIPanel } from './surface';
+import { radiusClass } from '../../lib/shadcn-tokens';
 
 export function UIPageShell({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
@@ -29,15 +30,15 @@ export function UIPageHeader({
 }: UIPageHeaderProps) {
   return (
     <div
-      className={cn('border-b border-[var(--panel-border)] px-8 py-6', className)}
+      className={cn('border-b border-[var(--panel-border)] bg-[var(--ui-pane-header-bg)] px-8 py-6', className)}
       {...props}
     >
       <div className="flex items-start justify-between gap-6">
         <div className="min-w-0">
-          {kicker && <div className="text-[11px] uppercase tracking-[0.24em] text-white/30">{kicker}</div>}
-          <h2 className="mt-2 text-[30px] font-semibold tracking-tight text-white">{title}</h2>
+          {kicker && <div className="text-[11px] uppercase tracking-[0.24em] text-[var(--ui-kicker)]">{kicker}</div>}
+          <h2 className="mt-2 text-[30px] font-semibold tracking-tight text-[var(--text-primary)]">{title}</h2>
           {description && (
-            <p className="mt-2 max-w-4xl text-[15px] leading-7 text-white/48">{description}</p>
+            <p className="mt-2 max-w-4xl text-[15px] leading-7 text-[var(--text-secondary)]">{description}</p>
           )}
         </div>
         {actions && <div className="flex items-center gap-2.5">{actions}</div>}
@@ -68,7 +69,7 @@ export function UICardGrid({ className, ...props }: HTMLAttributes<HTMLDivElemen
 export function UIListCard({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   return (
     <UIPanel
-      className={cn('flex h-full flex-col rounded-[1.7rem] border bg-[var(--panel-bg)]/72 px-5 py-5', className)}
+      className={cn('flex h-full flex-col border bg-[var(--ui-card-bg)] px-5 py-5', `${radiusClass.xl}`, className)}
       {...props}
     />
   );
@@ -79,6 +80,7 @@ export function UIOverlayPage({ className, ...props }: HTMLAttributes<HTMLDivEle
     <div
       className={cn(
         'absolute inset-0 z-20 flex min-h-0 flex-col overflow-hidden bg-[linear-gradient(180deg,rgba(11,16,29,0.985),rgba(7,11,21,0.995))]',
+        'bg-[var(--bg-base)]',
         className,
       )}
       {...props}

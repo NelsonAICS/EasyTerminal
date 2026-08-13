@@ -3,3 +3,7 @@ export * from './input';
 export * from './layout';
 export * from './modal';
 export * from './surface';
+export * from './drawer';
+export * from './list';
+export * from './catalog';
+export * from './workbench';

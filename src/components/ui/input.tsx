@@ -1,5 +1,11 @@
-import { forwardRef, type InputHTMLAttributes, type TextareaHTMLAttributes } from 'react';
+import {
+  forwardRef,
+  type InputHTMLAttributes,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
+} from 'react';
 import { cn } from '../../lib/cn';
+import { radiusClass, shadows } from '../../lib/shadcn-tokens';
 
 export const UIInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(
   function UIInput({ className, ...props }, ref) {
@@ -7,7 +13,8 @@ export const UIInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInpu
       <input
         ref={ref}
         className={cn(
-          'h-10 w-full rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-4 text-sm text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] outline-none transition-colors placeholder:text-white/30 focus:border-[var(--panel-border-glow)] focus:bg-white/[0.09]',
+          'ui-field h-10 w-full border px-4 text-sm outline-none',
+          `border-[var(--panel-border)] ${radiusClass.lg} ${shadows.inset}`,
           className,
         )}
         {...props}
@@ -22,11 +29,30 @@ export const UITextarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes
       <textarea
         ref={ref}
         className={cn(
-          'w-full rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-4 py-3 text-sm leading-6 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] outline-none transition-colors placeholder:text-white/30 focus:border-[var(--panel-border-glow)] focus:bg-white/[0.09]',
+          'ui-field w-full border px-4 py-3 text-sm leading-6 outline-none',
+          `border-[var(--panel-border)] ${radiusClass.lg} ${shadows.inset}`,
           className,
         )}
         {...props}
       />
+    );
+  },
+);
+
+export const UISelect = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(
+  function UISelect({ className, children, ...props }, ref) {
+    return (
+      <select
+        ref={ref}
+        className={cn(
+          'ui-field h-10 w-full border px-4 text-sm outline-none',
+          `border-[var(--panel-border)] ${radiusClass.lg} ${shadows.inset}`,
+          className,
+        )}
+        {...props}
+      >
+        {children}
+      </select>
     );
   },
 );

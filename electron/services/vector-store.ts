@@ -1,11 +1,14 @@
 // Embedding Service — Generate embeddings via local Ollama or remote API
+import { resolveEmbeddingEndpoint } from '../../src/shared/api-endpoints';
 
 export interface EmbeddingConfig {
   source: 'local' | 'provider' | 'custom';
   localUrl?: string;
   providerBaseUrl?: string;
+  providerEmbeddingEndpoint?: string;
   providerApiKey?: string;
   customBaseUrl?: string;
+  customEmbeddingEndpoint?: string;
   customApiKey?: string;
   model: string;
 }
@@ -18,9 +21,10 @@ export async function generateEmbedding(config: EmbeddingConfig, text: string): 
 
   // Remote API (provider or custom)
   const baseUrl = config.providerBaseUrl || config.customBaseUrl || '';
+  const endpointOverride = config.providerEmbeddingEndpoint || config.customEmbeddingEndpoint;
   const apiKey = config.providerApiKey || config.customApiKey || '';
 
-  const res = await fetch(`${baseUrl}/embeddings`, {
+  const res = await fetch(resolveEmbeddingEndpoint(baseUrl, endpointOverride), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

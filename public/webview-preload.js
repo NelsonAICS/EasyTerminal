@@ -96,3 +96,23 @@ window.addEventListener('contextmenu', (e) => {
     e.preventDefault();
   }
 }, true);
+
+// ── Plugin Script Injection ──────────────────────────────────────
+// Listen for plugin scripts from the host (BrowserPanel.tsx)
+ipcRenderer.on('inject-plugins', (event, scripts) => {
+  if (!scripts || !Array.isArray(scripts)) return;
+  try {
+    scripts.forEach(script => {
+      if (script && typeof script === 'string' && script.trim()) {
+        try {
+          // eslint-disable-next-line no-eval
+          eval(script);
+        } catch (err) {
+          console.error('[EasyTerminal Plugin] Script error:', err.message);
+        }
+      }
+    });
+  } catch (err) {
+    console.error('[EasyTerminal Plugin] Injection error:', err);
+  }
+});

@@ -15,14 +15,26 @@ import { exec, execSync } from 'child_process'
 import * as fs from 'node:fs'
 import { contextManager } from './context-manager'
 import Store from 'electron-store'
-import { getDatabase } from './services/database'
+import { getDatabase, dbQuery, dbRun, dbGet, dbDelete } from './services/database'
 import * as promptManager from './services/prompt-manager'
 import * as skillManager from './services/skill-manager'
-import * as knowledgeBase from './services/knowledge-base'
-import * as workflowEngine from './services/workflow-engine'
-import { runReActLoop, type ReActTool } from './services/react-engine'
+import * as contextStore from './services/context-store'
+import * as preferenceLearner from './services/preference-learner'
+import { createContextOrchestrator } from './services/context-orchestrator'
+import { createDriftGuard } from './services/drift-guard'
+import { createDefaultCapabilityRegistry } from './services/capability-registry'
 import { chatCompletion, simpleCompletion, type LLMConfig } from './services/llm-gateway'
 import { type EmbeddingConfig } from './services/vector-store'
+import { getIslandManager } from './services/island-manager'
+import * as unifiedSearch from './services/unified-search'
+import type { CapabilityKind } from '../src/types/capability'
+import type { UIIntent } from '../src/types/ui-intent'
+import {
+  resolveAnthropicMessagesEndpoint,
+  resolveGeminiGenerateContentEndpoint,
+  resolveOllamaChatEndpoint,
+  resolveOpenAIChatEndpoint,
+} from '../src/shared/api-endpoints'
 
 const store = new Store()
 
@@ -733,7 +745,8 @@ ipcMain.handle('proxy:enable', async (_event, appId: string) => {
         id: (provider as Record<string, string>).id,
         baseUrl: (provider as Record<string, string>).baseUrl,
         apiKey: (provider as Record<string, string>).apiKey,
-        chatEndpoint: (provider as Record<string, string>).chatEndpoint
+        chatEndpoint: (provider as Record<string, string>).chatEndpoint,
+        embeddingEndpoint: (provider as Record<string, string>).embeddingEndpoint
       },
       port: proxyState.port
     };
@@ -808,7 +821,7 @@ ipcMain.handle('app-config:write', async (_event, appId: string, key: string, va
 // Provider test IPC (enhanced)
 ipcMain.handle('provider:test', async (_event, provider: Record<string, string>) => {
   try {
-    const { id, baseUrl, apiKey, models, chatEndpoint } = provider;
+    const { id, baseUrl, apiKey, models, apiFormat, chatEndpoint } = provider;
 
     let endpoint = baseUrl;
     const headers: Record<string, string> = {
@@ -816,8 +829,21 @@ ipcMain.handle('provider:test', async (_event, provider: Record<string, string>)
     };
     let body: string | null = null;
 
-    if (id === 'anthropic') {
-      endpoint += '/v1/messages';
+    if (id === 'gemini') {
+      const model = models.split(',')[0] || 'gemini-1.5-flash';
+      endpoint = resolveGeminiGenerateContentEndpoint(baseUrl, model, apiKey, chatEndpoint);
+      body = JSON.stringify({
+        contents: [{ parts: [{ text: "hi" }] }]
+      });
+    } else if (id === 'ollama') {
+      endpoint = resolveOllamaChatEndpoint(baseUrl, chatEndpoint);
+      body = JSON.stringify({
+        model: models.split(',')[0] || 'llama3',
+        messages: [{ role: 'user', content: 'hi' }],
+        stream: false
+      });
+    } else if (apiFormat === 'anthropic' || id === 'anthropic' || id === 'minimax' || id === 'doubao') {
+      endpoint = resolveAnthropicMessagesEndpoint(baseUrl, chatEndpoint);
       headers['x-api-key'] = apiKey;
       headers['anthropic-version'] = '2023-06-01';
       body = JSON.stringify({
@@ -825,29 +851,8 @@ ipcMain.handle('provider:test', async (_event, provider: Record<string, string>)
         max_tokens: 1,
         messages: [{ role: 'user', content: 'hi' }]
       });
-    } else if (id === 'gemini') {
-      const model = models.split(',')[0] || 'gemini-1.5-flash';
-      endpoint += `/models/${model}:generateContent?key=${apiKey}`;
-      body = JSON.stringify({
-        contents: [{ parts: [{ text: "hi" }] }]
-      });
-    } else if (id === 'minimax') {
-      endpoint = `${baseUrl}${chatEndpoint}`;
-      headers['Authorization'] = `Bearer ${apiKey}`;
-      body = JSON.stringify({
-        model: models.split(',')[0] || 'abab6.5-chat',
-        messages: [{ role: 'user', content: 'hi' }],
-        max_tokens: 1
-      });
-    } else if (id === 'ollama') {
-      endpoint = `${baseUrl}${chatEndpoint}`;
-      body = JSON.stringify({
-        model: models.split(',')[0] || 'llama3',
-        messages: [{ role: 'user', content: 'hi' }],
-        stream: false
-      });
     } else {
-      endpoint = `${baseUrl}${chatEndpoint}`;
+      endpoint = resolveOpenAIChatEndpoint(baseUrl, chatEndpoint);
       headers['Authorization'] = `Bearer ${apiKey}`;
       body = JSON.stringify({
         model: models.split(',')[0] || 'gpt-3.5-turbo',
@@ -924,6 +929,14 @@ const terminals: Record<string, pty.IPty> = {}
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const sessionLoggers: Record<string, any> = {}
 const currentCwd = process.env.HOME || process.cwd()
+let currentUIIntent: UIIntent | null = null
+
+function broadcastUIIntent(intent: UIIntent | null) {
+  currentUIIntent = intent
+  if (win && !win.isDestroyed()) {
+    win.webContents.send('ui:intent:updated', intent)
+  }
+}
 
 const getIconPath = () => {
   const p = app.isPackaged 
@@ -1090,7 +1103,7 @@ let lastShortcutTrigger = 0;
 
 // Helper: build LLMConfig from stored settings
 function buildLLMConfig(providerId?: string, model?: string): LLMConfig | null {
-  const providers = store.get('model_providers', []) as Array<{ id: string; baseUrl: string; apiKey: string; models: string; icon: string; apiFormat?: string }>;
+  const providers = store.get('model_providers', []) as Array<{ id: string; baseUrl: string; chatEndpoint?: string; apiKey: string; models: string; icon: string; apiFormat?: string }>;
   const settings = store.get('app_settings') as { reasoningModel?: { providerId: string; model: string } } | null;
 
   // Use reasoning model if no specific provider given
@@ -1102,6 +1115,7 @@ function buildLLMConfig(providerId?: string, model?: string): LLMConfig | null {
   return {
     provider: provider.id,
     baseUrl: provider.baseUrl,
+    chatEndpoint: provider.chatEndpoint,
     apiKey: provider.apiKey,
     model: targetModel,
     apiFormat: provider.apiFormat as 'anthropic' | 'openai_chat' | undefined,
@@ -1117,12 +1131,54 @@ function buildEmbeddingConfig(): EmbeddingConfig {
     return { source: 'local', localUrl: em.localUrl || 'http://localhost:11434', model: em.model };
   }
   if (em.source === 'provider') {
-    const providers = store.get('model_providers', []) as Array<{ id: string; baseUrl: string; apiKey: string }>;
+    const providers = store.get('model_providers', []) as Array<{ id: string; baseUrl: string; embeddingEndpoint?: string; apiKey: string }>;
     const p = providers.find((pr: { id: string }) => pr.id === em.providerId);
-    return { source: 'provider', providerBaseUrl: p?.baseUrl, providerApiKey: p?.apiKey, model: em.model };
+    return {
+      source: 'provider',
+      providerBaseUrl: p?.baseUrl,
+      providerEmbeddingEndpoint: p?.embeddingEndpoint,
+      providerApiKey: p?.apiKey,
+      model: em.model
+    };
   }
-  return { source: 'custom', customBaseUrl: em.customBaseUrl, customApiKey: em.customApiKey, model: em.model };
+  return {
+    source: 'custom',
+    customBaseUrl: em.customBaseUrl,
+    customEmbeddingEndpoint: em.customEmbeddingEndpoint,
+    customApiKey: em.customApiKey,
+    model: em.model
+  };
 }
+
+const capabilityRegistry = createDefaultCapabilityRegistry({
+  getLLMConfig: buildLLMConfig,
+  getEmbeddingConfig: buildEmbeddingConfig,
+  listContextArtifacts: () => contextManager.listArtifacts(),
+  saveContextSnippet: (content: string, source?: string) => contextManager.saveContextSnippet(content, source),
+  queryContextRecords: (filters) => contextStore.queryRecords(filters),
+  listContextSnapshots: (filters) => contextStore.listSnapshots(filters),
+  listSessionEvents: (sessionId: string, limit?: number) => contextStore.listSessionEvents(sessionId, limit),
+  setUIIntent: (intent: UIIntent) => {
+    const nextIntent: UIIntent = {
+      ...intent,
+      createdAt: intent.createdAt || new Date().toISOString(),
+    };
+    broadcastUIIntent(nextIntent);
+    return nextIntent;
+  },
+  clearUIIntent: () => {
+    broadcastUIIntent(null);
+    return true;
+  },
+});
+
+const driftGuard = createDriftGuard();
+
+const contextOrchestrator = createContextOrchestrator({
+  getEmbeddingConfig: buildEmbeddingConfig,
+  projectRoot: process.cwd(),
+  driftGuard,
+});
 
 // ── Prompt Manager ────────────────────────────────────────────────
 ipcMain.handle('prompt:list', (_e, category?: string) => promptManager.listPrompts(category));
@@ -1154,142 +1210,175 @@ ipcMain.handle('skill:search', async (_e, query: string, topK?: number) => {
 });
 
 // ── Knowledge Base ────────────────────────────────────────────────
-ipcMain.handle('kb:list', (_e, collection?: string) => knowledgeBase.listDocuments(collection));
-ipcMain.handle('kb:get', (_e, id: string) => knowledgeBase.getDocument(id));
-ipcMain.handle('kb:delete', (_e, id: string) => knowledgeBase.deleteDocument(id));
-ipcMain.handle('kb:collections', () => knowledgeBase.getCollections());
+ipcMain.handle('kb:list', async (_e, collection?: string) => {
+  const kb = await import('./services/knowledge-base');
+  return kb.listDocuments(collection);
+});
+ipcMain.handle('kb:get', async (_e, id: string) => {
+  const kb = await import('./services/knowledge-base');
+  return kb.getDocument(id);
+});
+ipcMain.handle('kb:delete', async (_e, id: string) => {
+  const kb = await import('./services/knowledge-base');
+  return kb.deleteDocument(id);
+});
+ipcMain.handle('kb:collections', async () => {
+  const kb = await import('./services/knowledge-base');
+  return kb.getCollections();
+});
 ipcMain.handle('kb:add-document', async (_e, filePath: string, collection?: string) => {
+  const kb = await import('./services/knowledge-base');
   const embConfig = buildEmbeddingConfig();
-  return knowledgeBase.addDocument(filePath, embConfig, collection);
+  return kb.addDocument(filePath, embConfig, collection);
 });
 ipcMain.handle('kb:retrieve', async (_e, query: string, topK?: number, collection?: string) => {
+  const kb = await import('./services/knowledge-base');
   const embConfig = buildEmbeddingConfig();
-  return knowledgeBase.retrieveContext(query, embConfig, topK, collection);
+  return kb.retrieveContext(query, embConfig, topK, collection);
 });
 ipcMain.handle('kb:build-rag-prompt', async (_e, query: string, topK?: number, collection?: string) => {
+  const kb = await import('./services/knowledge-base');
   const embConfig = buildEmbeddingConfig();
-  return knowledgeBase.buildRAGPrompt(query, embConfig, topK, collection);
+  return kb.buildRAGPrompt(query, embConfig, topK, collection);
 });
 
 // ── Workflow Engine ───────────────────────────────────────────────
-ipcMain.handle('workflow:list', () => workflowEngine.listWorkflows());
-ipcMain.handle('workflow:get', (_e, id: string) => workflowEngine.getWorkflow(id));
-ipcMain.handle('workflow:create', (_e, data: { name: string; description?: string; category?: string; tags?: string[] }) => workflowEngine.createWorkflow(data));
-ipcMain.handle('workflow:update', (_e, id: string, data: Record<string, unknown>) => workflowEngine.updateWorkflow(id, data));
-ipcMain.handle('workflow:delete', (_e, id: string) => workflowEngine.deleteWorkflow(id));
-ipcMain.handle('workflow:runs', (_e, workflowId?: string) => workflowEngine.listWorkflowRuns(workflowId));
-ipcMain.handle('workflow:build-agent-prompt', (_e, id: string) => workflowEngine.buildWorkflowAgentPrompt(id));
+ipcMain.handle('workflow:list', async () => {
+  const we = await import('./services/workflow-engine');
+  return we.listWorkflows();
+});
+ipcMain.handle('workflow:get', async (_e, id: string) => {
+  const we = await import('./services/workflow-engine');
+  return we.getWorkflow(id);
+});
+ipcMain.handle('workflow:create', async (_e, data: { name: string; description?: string; category?: string; tags?: string[] }) => {
+  const we = await import('./services/workflow-engine');
+  return we.createWorkflow(data);
+});
+ipcMain.handle('workflow:update', async (_e, id: string, data: Record<string, unknown>) => {
+  const we = await import('./services/workflow-engine');
+  return we.updateWorkflow(id, data);
+});
+ipcMain.handle('workflow:delete', async (_e, id: string) => {
+  const we = await import('./services/workflow-engine');
+  return we.deleteWorkflow(id);
+});
+ipcMain.handle('workflow:runs', async (_e, workflowId?: string) => {
+  const we = await import('./services/workflow-engine');
+  return we.listWorkflowRuns(workflowId);
+});
+ipcMain.handle('workflow:build-agent-prompt', async (_e, id: string) => {
+  const we = await import('./services/workflow-engine');
+  return we.buildWorkflowAgentPrompt(id);
+});
 ipcMain.handle('workflow:execute', async (_e, id: string, variables?: Record<string, unknown>) => {
+  const we = await import('./services/workflow-engine');
   const config = buildLLMConfig();
   if (!config) throw new Error('No reasoning model configured');
   const embConfig = buildEmbeddingConfig();
-  return workflowEngine.executeWorkflow(id, config, variables, embConfig);
-});
 
-// ── ReAct Engine (direct agent invocation) ────────────────────────
-ipcMain.handle('agent:react', async (_event, query: string, toolNames?: string[]) => {
-  const config = buildLLMConfig();
-  if (!config) throw new Error('No reasoning model configured');
-
-  // Build available tools from skills
-  const tools: ReActTool[] = [];
-
-  // Knowledge base retrieval tool
-  tools.push({
-    type: 'function',
-    function: {
-      name: 'knowledge_search',
-      description: 'Search the personal knowledge base for relevant documents and information',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search query' },
-          top_k: { type: 'number', description: 'Number of results to return' },
-        },
-        required: ['query'],
-      },
+  return we.executeWorkflow(id, config, variables, embConfig, {
+    onNodeStart: (node) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('workflow:status', {
+          type: 'node_start',
+          nodeId: node.id,
+          nodeType: node.type,
+          nodeLabel: node.label,
+          timestamp: new Date().toISOString(),
+        });
+      }
     },
-    execute: async (args) => {
-      const embConfig = buildEmbeddingConfig();
-      const results = await knowledgeBase.retrieveContext(args.query, embConfig, args.top_k || 3);
-      return JSON.stringify(results.map(r => ({ content: r.chunk.content, source: r.doc?.filename, score: r.score })));
+    onNodeComplete: (node, result) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('workflow:status', {
+          type: 'node_complete',
+          nodeId: node.id,
+          nodeType: node.type,
+          nodeLabel: node.label,
+          timestamp: new Date().toISOString(),
+        });
+      }
     },
-  });
-
-  // Skill search tool
-  tools.push({
-    type: 'function',
-    function: {
-      name: 'skill_search',
-      description: 'Search for available skills that match a given requirement',
-      parameters: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Skill requirement description' },
-        },
-        required: ['query'],
-      },
-    },
-    execute: async (args) => {
-      const embConfig = buildEmbeddingConfig();
-      const results = await skillManager.searchSkills(args.query, embConfig, 5);
-      return JSON.stringify(results.map(r => ({ name: r.skill.name, description: r.skill.description, score: r.score })));
-    },
-  });
-
-  // File read tool
-  tools.push({
-    type: 'function',
-    function: {
-      name: 'read_file',
-      description: 'Read the contents of a file',
-      parameters: {
-        type: 'object',
-        properties: {
-          path: { type: 'string', description: 'File path to read' },
-        },
-        required: ['path'],
-      },
-    },
-    execute: async (args) => {
-      try {
-        return fs.readFileSync(args.path, 'utf-8').substring(0, 10000);
-      } catch (err: unknown) {
-        return `Error reading file: ${err instanceof Error ? err.message : 'Unknown error'}`;
+    onLog: (log) => {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('workflow:log', log);
       }
     },
   });
+});
 
-  // Run command tool
-  tools.push({
-    type: 'function',
-    function: {
-      name: 'run_command',
-      description: 'Execute a shell command and return the output',
-      parameters: {
-        type: 'object',
-        properties: {
-          command: { type: 'string', description: 'Shell command to execute' },
-        },
-        required: ['command'],
+// ── Capability Registry ──────────────────────────────────────────
+ipcMain.handle('capability:list', (_e, query?: string, kinds?: CapabilityKind[]) => {
+  return capabilityRegistry.list({ query, kinds });
+});
+ipcMain.handle('capability:get', (_e, id: string) => capabilityRegistry.get(id));
+ipcMain.handle('capability:invoke', async (_e, id: string, input?: Record<string, unknown>) => {
+  return capabilityRegistry.invoke(id, input || {});
+});
+
+// ── ReAct Engine (direct agent invocation) ────────────────────────
+let _agentRuntime: { run: Function } | null = null;
+
+const getAgentRuntime = async () => {
+  if (!_agentRuntime) {
+    const { createAgentRuntime } = await import('./services/agent-runtime');
+    _agentRuntime = createAgentRuntime({
+      getLLMConfig: buildLLMConfig,
+      buildContextPacket: (options: unknown) => contextOrchestrator.buildContextPacket(options as { sessionId?: string; types?: string[]; maxTokens?: number }),
+      capabilityRegistry,
+      readFile: async (filePath: string) => {
+        try {
+          return fs.readFileSync(filePath, 'utf-8').substring(0, 10000);
+        } catch (err: unknown) {
+          return `Error reading file: ${err instanceof Error ? err.message : 'Unknown error'}`;
+        }
       },
-    },
-    execute: async (args) => {
-      return new Promise((resolve) => {
-        exec(args.command, { timeout: 30000 }, (error, stdout, stderr) => {
-          if (error) resolve(`Error: ${error.message}\n${stderr}`);
-          else resolve(stdout || stderr || '(no output)');
+      runCommand: async (command: string) => {
+        return new Promise((resolve) => {
+          exec(command, { timeout: 30000 }, (error, stdout, stderr) => {
+            if (error) resolve(`Error: ${error.message}\n${stderr}`);
+            else resolve(stdout || stderr || '(no output)');
+          });
         });
-      });
-    },
-  });
+      },
+      sendStreamEvent: (event: unknown) => {
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('agent:stream', event);
+        }
+      },
+    });
+  }
+  return _agentRuntime;
+};
 
-  // Filter tools if specific names requested
-  const filteredTools = toolNames
-    ? tools.filter(t => toolNames.includes(t.function.name))
-    : tools;
+ipcMain.handle('agent:react', async (
+  _event,
+  query: string,
+  toolNames?: string[],
+  options?: { providerId?: string; model?: string; sessionId?: string; taskId?: string }
+) => {
+  const runtime = await getAgentRuntime();
+  return runtime.run(query, toolNames, options);
+});
 
-  return runReActLoop(config, query, filteredTools);
+// ── UI Intent ─────────────────────────────────────────────────────
+ipcMain.handle('ui:intent:get-current', () => currentUIIntent);
+ipcMain.handle('ui:intent:set', (_event, intent: UIIntent) => {
+  const nextIntent: UIIntent = {
+    ...intent,
+    createdAt: intent.createdAt || new Date().toISOString(),
+  };
+  broadcastUIIntent(nextIntent);
+  return nextIntent;
+});
+ipcMain.handle('ui:intent:clear', () => {
+  broadcastUIIntent(null);
+  return true;
+});
+ipcMain.handle('ui:intent:action', (_event, actionId: string, intent?: UIIntent | null) => {
+  console.log('[UIIntent] Action triggered:', actionId, intent?.id || currentUIIntent?.id || 'no-intent');
+  return { ok: true, actionId, intentId: intent?.id || currentUIIntent?.id || null };
 });
 
 // ── Direct LLM call ───────────────────────────────────────────────
@@ -1309,6 +1398,27 @@ ipcMain.handle('llm:simple', async (_e, prompt: string, systemPrompt?: string, p
 ipcMain.handle('db:init', () => {
   getDatabase();
   return true;
+});
+
+// ── Preference Learning ────────────────────────────────────────────
+ipcMain.handle('preference:learn-prompt', (_event, prompt: string) => {
+  preferenceLearner.learnFromPrompt(prompt);
+});
+
+ipcMain.handle('preference:learn-skill', (_event, skillId: string, skillName: string) => {
+  preferenceLearner.learnFromSkill(skillId, skillName);
+});
+
+ipcMain.handle('preference:learn-language', (_event, language: string) => {
+  preferenceLearner.learnFromLanguage(language);
+});
+
+ipcMain.handle('preference:get', (_event, scope?: string) => {
+  return preferenceLearner.getPreferences(scope);
+});
+
+ipcMain.handle('preference:build-block', () => {
+  return preferenceLearner.buildStyleBlock();
 });
 
 app.whenReady().then(() => {
@@ -1865,8 +1975,182 @@ app.whenReady().then(() => {
     return result.canceled ? null : result.filePaths[0] || null;
   })
 
-  ipcMain.handle('context:list', () => contextManager.listArtifacts())
-  ipcMain.handle('context:save-snippet', (_event, content: string, source?: string) => contextManager.saveContextSnippet(content, source))
+ipcMain.handle('context:list', () => contextManager.listArtifacts())
+ipcMain.handle('context:save-snippet', (_event, content: string, source?: string) => contextManager.saveContextSnippet(content, source))
+ipcMain.handle('context:record', (_event, record) => contextStore.createRecord(record))
+ipcMain.handle('context:session-event', (_event, sessionEvent) => contextStore.appendSessionEvent(sessionEvent))
+ipcMain.handle('context:records', (_event, filters) => contextStore.queryRecords(filters))
+ipcMain.handle('context:snapshot:create', (_event, snapshot) => contextStore.createSnapshot(snapshot))
+ipcMain.handle('context:snapshots', (_event, filters) => contextStore.listSnapshots(filters))
+ipcMain.handle('context:session-events', (_event, sessionId: string, limit?: number) => contextStore.listSessionEvents(sessionId, limit))
+ipcMain.handle('context:recent-events', (_event, limit?: number) => contextStore.listRecentSessionEvents(limit))
+ipcMain.handle('context:build-packet', (_event, options) => contextOrchestrator.buildContextPacket(options))
+ipcMain.handle('context:compact', (_event, options) => contextOrchestrator.compactContext(options))
+ipcMain.handle('context:drift-check', (_event, summaryBlock: string, options) => driftGuard.checkSummary(summaryBlock, options))
+ipcMain.handle('context:analyze', async (_event, content: string) => {
+  const config = buildLLMConfig();
+  if (!config) throw new Error('No reasoning model configured');
+  const systemPrompt = `你是一个代码和终端输出分析助手。请分析以下内容，提取关键信息：
+
+1. 错误和警告信息
+2. 重要的文件路径和命令
+3. 当前工作目录状态
+4. 关键的系统/环境信息
+5. 可能的下一步行动建议
+
+请用简洁的markdown格式返回分析结果。如果内容没有有价值的信息，返回"无可分析内容"。`;
+
+  try {
+    const result = await simpleCompletion(config, `请分析这段内容：\n\n${content}`, systemPrompt);
+    return { success: true, analysis: result };
+  } catch (err) {
+    console.error('[Context Analyze] Error:', err);
+    return { success: false, error: String(err) };
+  }
+})
+
+  ipcMain.handle('context:export-json', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const overview = contextManager.listArtifacts()
+    const records = contextStore.queryRecords({ limit: 500 })
+    const snapshots = contextStore.listSnapshots({ limit: 200 })
+    const events = contextStore.listRecentSessionEvents(300)
+    const snippets = overview.snippets.map(snippet => {
+      let content = ''
+      try {
+        content = fs.readFileSync(snippet.path, 'utf-8')
+      } catch {
+        content = ''
+      }
+      return {
+        id: snippet.id,
+        name: snippet.name,
+        path: snippet.path,
+        updatedAt: snippet.updatedAt,
+        tags: snippet.tags,
+        content,
+      }
+    })
+
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      basePath: overview.basePath,
+      counts: {
+        records: records.length,
+        snapshots: snapshots.length,
+        events: events.length,
+        snippets: snippets.length,
+      },
+      records,
+      snapshots,
+      events,
+      snippets,
+    }
+
+    const defaultName = `easyterminal-context-${new Date().toISOString().slice(0, 10)}.json`
+    const { canceled, filePath } = await dialog.showSaveDialog(window || undefined, {
+      title: '导出上下文数据',
+      defaultPath: defaultName,
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+
+    if (canceled || !filePath) {
+      return { success: false, canceled: true }
+    }
+
+    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8')
+    return {
+      success: true,
+      filePath,
+      counts: payload.counts,
+    }
+  })
+  ipcMain.handle('context:import-json', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window || undefined, {
+      title: '导入上下文数据',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+
+    if (result.canceled || !result.filePaths[0]) {
+      return { success: false, canceled: true }
+    }
+
+    const filePath = result.filePaths[0]
+    const raw = fs.readFileSync(filePath, 'utf-8')
+    const parsed = JSON.parse(raw) as {
+      records?: Array<Record<string, unknown>>;
+      snapshots?: Array<Record<string, unknown>>;
+      events?: Array<Record<string, unknown>>;
+      snippets?: Array<Record<string, unknown>>;
+    }
+
+    let importedRecords = 0
+    let importedSnapshots = 0
+    let importedEvents = 0
+    let importedSnippets = 0
+
+    for (const record of parsed.records || []) {
+      if (typeof record.title !== 'string' || typeof record.summary !== 'string') continue
+      contextStore.createRecord({
+        scope: (record.scope as 'global' | 'project' | 'task' | 'session') || 'project',
+        kind: (record.kind as 'goal' | 'constraint' | 'decision' | 'issue' | 'artifact' | 'style' | 'next_step' | 'summary') || 'summary',
+        title: record.title,
+        summary: record.summary,
+        details: typeof record.details === 'string' ? record.details : '',
+        salience: typeof record.salience === 'number' ? record.salience : 0.5,
+        status: (record.status as 'active' | 'superseded' | 'archived') || 'active',
+        source_type: (record.source_type as 'doc' | 'session' | 'tool' | 'workflow' | 'manual') || 'manual',
+        source_ref: typeof record.source_ref === 'string' ? record.source_ref : 'ImportedContext',
+        evidence_refs: Array.isArray(record.evidence_refs) ? record.evidence_refs.filter((item): item is string => typeof item === 'string') : [],
+      })
+      importedRecords += 1
+    }
+
+    for (const snapshot of parsed.snapshots || []) {
+      if (typeof snapshot.summary_block !== 'string') continue
+      contextStore.createSnapshot({
+        session_id: typeof snapshot.session_id === 'string' ? snapshot.session_id : '',
+        task_id: typeof snapshot.task_id === 'string' ? snapshot.task_id : '',
+        version: typeof snapshot.version === 'number' ? snapshot.version : 1,
+        summary_block: snapshot.summary_block,
+        token_estimate: typeof snapshot.token_estimate === 'number' ? snapshot.token_estimate : Math.ceil(snapshot.summary_block.length / 4),
+        drift_score: typeof snapshot.drift_score === 'number' ? snapshot.drift_score : 0,
+        status: (snapshot.status as 'active' | 'candidate' | 'replaced') || 'candidate',
+      })
+      importedSnapshots += 1
+    }
+
+    for (const sessionEvent of parsed.events || []) {
+      if (typeof sessionEvent.payload !== 'string') continue
+      contextStore.appendSessionEvent({
+        session_id: typeof sessionEvent.session_id === 'string' ? sessionEvent.session_id : 'imported_session',
+        event_type: (sessionEvent.event_type as 'session_start' | 'session_end' | 'user_prompt' | 'tool_call' | 'tool_result' | 'assistant_reply' | 'manual_capture') || 'manual_capture',
+        payload: sessionEvent.payload,
+        token_estimate: typeof sessionEvent.token_estimate === 'number' ? sessionEvent.token_estimate : Math.ceil(sessionEvent.payload.length / 4),
+      })
+      importedEvents += 1
+    }
+
+    for (const snippet of parsed.snippets || []) {
+      if (typeof snippet.content !== 'string' || !snippet.content.trim()) continue
+      contextManager.saveContextSnippet(snippet.content.trim(), typeof snippet.name === 'string' ? `Imported:${snippet.name}` : 'ImportedContext')
+      importedSnippets += 1
+    }
+
+    return {
+      success: true,
+      filePath,
+      counts: {
+        records: importedRecords,
+        snapshots: importedSnapshots,
+        events: importedEvents,
+        snippets: importedSnippets,
+      },
+    }
+  })
 
   ipcMain.handle('file:read', async (_event, filePath: string) => {
     try {
@@ -2001,6 +2285,23 @@ app.whenReady().then(() => {
     }
   })
 
+  // Island Manager IPC — Detection Config
+  ipcMain.handle('island:get-detection-config', () => {
+    return getIslandManager().getConfig();
+  });
+  ipcMain.handle('island:update-detection-config', (_event, updates: Record<string, unknown>) => {
+    return getIslandManager().updateConfig(updates as Parameters<ReturnType<typeof getIslandManager>['updateConfig']>[0]);
+  });
+  ipcMain.handle('island:detect-tui', (_event, lines: string[], text: string) => {
+    return getIslandManager().detect(lines, text);
+  });
+  ipcMain.handle('island:get-state', () => {
+    return getIslandManager().getState();
+  });
+  ipcMain.on('island:set-agent-state', (_event, state: string) => {
+    getIslandManager().setAgentState(state as 'idle' | 'thinking' | 'working' | 'waiting' | 'error');
+  });
+
   // Island IPC
   ipcMain.on('island:trigger', (_event, msg: string) => {
     if (islandWin && !islandWin.isDestroyed()) {
@@ -2027,6 +2328,90 @@ app.whenReady().then(() => {
       islandWin.webContents.send('island:status', msg)
     }
   })
+
+  // ── Browser IPC ───────────────────────────────────────────────────
+  ipcMain.handle('browser:send-to-terminal', (_event, text: string) => {
+    // Save browser selection to context
+    if (text && text.trim()) {
+      contextManager.saveContextSnippet(text, 'browser-selection');
+    }
+    return true;
+  });
+
+  ipcMain.handle('browser:save-history', (_event, data: { url: string; title: string; content?: string }) => {
+    dbRun(
+      'INSERT INTO browser_history (id, url, title, content) VALUES (?, ?, ?, ?)',
+      [generateId(), data.url, data.title, data.content || '']
+    );
+    return true;
+  });
+
+  ipcMain.handle('browser:get-history', (_event, limit?: number) => {
+    return dbQuery('SELECT * FROM browser_history ORDER BY created_at DESC LIMIT ?', [limit || 50]);
+  });
+
+  // ── Browser Plugin IPC ────────────────────────────────────────────
+  ipcMain.handle('browser:plugin:list', () => {
+    return dbQuery('SELECT * FROM browser_plugins ORDER BY created_at DESC');
+  });
+
+  ipcMain.handle('browser:plugin:create', (_event, plugin: { name: string; description: string; matchPattern: string; script: string; enabled?: boolean }) => {
+    const id = generateId();
+    dbRun(
+      'INSERT INTO browser_plugins (id, name, description, match_pattern, script, enabled) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, plugin.name, plugin.description || '', plugin.matchPattern || '*://*/*', plugin.script, plugin.enabled !== false ? 1 : 0]
+    );
+    return dbGet('browser_plugins', id);
+  });
+
+  ipcMain.handle('browser:plugin:update', (_event, id: string, plugin: { name?: string; description?: string; matchPattern?: string; script?: string; enabled?: boolean }) => {
+    const existing = dbGet('browser_plugins', id);
+    if (!existing) return null;
+    const fields: Record<string, unknown> = {};
+    if (plugin.name !== undefined) fields.name = plugin.name;
+    if (plugin.description !== undefined) fields.description = plugin.description;
+    if (plugin.matchPattern !== undefined) fields.match_pattern = plugin.matchPattern;
+    if (plugin.script !== undefined) fields.script = plugin.script;
+    if (plugin.enabled !== undefined) fields.enabled = plugin.enabled ? 1 : 0;
+    dbRun(
+      `UPDATE browser_plugins SET ${Object.keys(fields).map(k => `${k} = ?`).join(', ')}, updated_at = datetime('now') WHERE id = ?`,
+      [...Object.values(fields), id]
+    );
+    return dbGet('browser_plugins', id);
+  });
+
+  ipcMain.handle('browser:plugin:delete', (_event, id: string) => {
+    dbDelete('browser_plugins', id);
+    return true;
+  });
+
+  ipcMain.handle('browser:plugin:get-enabled', () => {
+    return dbQuery('SELECT * FROM browser_plugins WHERE enabled = 1 ORDER BY created_at DESC');
+  });
+
+  // ── Unified Search ───────────────────────────────────────────────
+  ipcMain.handle('search:unified', async (_event, query: string, modules?: string[], topK?: number) => {
+    const { buildLLMConfig } = await import('./services/llm-gateway');
+    const llmConfig = buildLLMConfig();
+    // Build embedding config from LLM config if available
+    const embeddingConfig = llmConfig ? {
+      source: 'provider' as const,
+      providerBaseUrl: llmConfig.baseUrl,
+      providerApiKey: llmConfig.apiKey,
+      model: llmConfig.model,
+    } : undefined;
+    return unifiedSearch.unifiedSearch({
+      query,
+      modules: (modules || ['prompt', 'skill', 'knowledge', 'workflow', 'context']) as Array<'prompt' | 'skill' | 'knowledge' | 'workflow' | 'context'>,
+      topK: topK || 5,
+      embeddingConfig,
+    });
+  });
+
+  // ── Browser (Workflow) ─────────────────────────────────────────────
+  ipcMain.handle('workflow:browser-execute', async (_event, options: { url: string; script: string; timeout?: number }) => {
+    return workflowEngine.executeBrowserScript(options);
+  });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ipcMain.on('island:prompt', (_event, data: { message: string, options: any[], sessionId: string }) => {

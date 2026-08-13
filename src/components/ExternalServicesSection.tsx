@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Plus, Trash2, RefreshCw, Check, Cloud, MessageSquare, Link, Mail, Puzzle, ToggleLeft, ToggleRight } from 'lucide-react';
 import { type ExternalServiceConfig, EXTERNAL_SERVICE_TYPES } from '../types/app-settings';
 import { AddServiceDialog } from './AddServiceDialog';
+import { CONNECTION_STATUS_BADGE_CLASSES, CONNECTION_STATUS_LABELS } from '../lib/ui-copy';
 
 interface Props {
   services: ExternalServiceConfig[];
@@ -44,18 +45,9 @@ export function ExternalServicesSection({ services, onUpdate, onTest }: Props) {
   };
 
   const statusBadge = (status: string) => {
-    const cls: Record<string, string> = {
-      success: 'bg-green-500/20 text-green-400',
-      error: 'bg-red-500/20 text-red-400',
-      testing: 'bg-yellow-500/20 text-yellow-400',
-      unknown: 'bg-gray-500/20 text-gray-400',
-    };
-    const label: Record<string, string> = {
-      success: '可用', error: '错误', testing: '测试中', unknown: '未测试',
-    };
     return (
-      <span className={`text-[10px] px-1.5 py-0.5 rounded ${cls[status]}`}>
-        {label[status]}
+      <span className={`text-[10px] px-1.5 py-0.5 rounded ${CONNECTION_STATUS_BADGE_CLASSES[status as keyof typeof CONNECTION_STATUS_BADGE_CLASSES] || CONNECTION_STATUS_BADGE_CLASSES.unknown}`}>
+        {CONNECTION_STATUS_LABELS[status as keyof typeof CONNECTION_STATUS_LABELS] || CONNECTION_STATUS_LABELS.unknown}
       </span>
     );
   };

@@ -1,6 +1,7 @@
 import { Plus, RefreshCw, Check, Trash2 } from 'lucide-react';
 import { type Provider } from '../types/agent';
 import { ProviderIcon } from './ProviderIcon';
+import { CONNECTION_STATUS_BADGE_CLASSES, CONNECTION_STATUS_LABELS } from '../lib/ui-copy';
 
 interface ProviderListProps {
   providers: Provider[];
@@ -13,10 +14,10 @@ interface ProviderListProps {
 
 const getStatusBadge = (status: string) => {
   switch (status) {
-    case 'success': return { text: '可用', className: 'bg-green-500/20 text-green-400' };
-    case 'error': return { text: '错误', className: 'bg-red-500/20 text-red-400' };
-    case 'testing': return { text: '测试中', className: 'bg-yellow-500/20 text-yellow-400' };
-    default: return { text: '未测试', className: 'bg-gray-500/20 text-gray-400' };
+    case 'success': return { text: CONNECTION_STATUS_LABELS.success, className: CONNECTION_STATUS_BADGE_CLASSES.success };
+    case 'error': return { text: CONNECTION_STATUS_LABELS.error, className: CONNECTION_STATUS_BADGE_CLASSES.error };
+    case 'testing': return { text: CONNECTION_STATUS_LABELS.testing, className: CONNECTION_STATUS_BADGE_CLASSES.testing };
+    default: return { text: CONNECTION_STATUS_LABELS.unknown, className: CONNECTION_STATUS_BADGE_CLASSES.unknown };
   }
 };
 
@@ -33,7 +34,7 @@ export function ProviderList({
       <div className="p-3 border-b border-[var(--panel-border)]">
         <button
           onClick={onAddProvider}
-          className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-white/5 text-[var(--text-secondary)] hover:bg-white/10 border border-white/10 transition-all text-sm font-medium"
+          className="w-full flex items-center justify-center gap-2 py-2 rounded-lg bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:bg-[var(--panel-border)] border border-[var(--panel-border)] transition-all text-sm font-medium"
         >
           <Plus size={16} />
           添加供应商
@@ -50,15 +51,15 @@ export function ProviderList({
               className={`
                 flex items-center gap-3 px-3 py-3 rounded-lg cursor-pointer transition-all
                 ${activeProviderId === p.id
-                  ? 'bg-white/10 border border-white/20'
-                  : 'hover:bg-white/5 border border-transparent'
+                  ? 'bg-[var(--surface-muted)] border border-[var(--panel-border)]'
+                  : 'hover:bg-[var(--surface-muted)] border border-transparent'
                 }
               `}
             >
               <ProviderIcon name={p.icon} size={32} />
 
               <div className="flex-1 min-w-0">
-                <div className={`text-sm font-medium truncate ${activeProviderId === p.id ? 'text-white' : 'text-[var(--text-secondary)]'}`}>
+                <div className={`text-sm font-medium truncate ${activeProviderId === p.id ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
                   {p.name}
                 </div>
                 <div className="flex items-center gap-2 mt-0.5">

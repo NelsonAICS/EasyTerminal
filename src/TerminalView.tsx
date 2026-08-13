@@ -22,9 +22,11 @@ interface TerminalViewProps {
   isActive: boolean
   fontSize: number
   themeName: string
+  autoCaptureTerminal?: boolean
+  autoAnalyzeContext?: boolean
 }
 
-export default function TerminalView({ id, name, isActive, fontSize, themeName }: TerminalViewProps) {
+export default function TerminalView({ id, name, isActive, fontSize, themeName, autoCaptureTerminal, autoAnalyzeContext }: TerminalViewProps) {
   const xtermRef = useRef<HTMLDivElement>(null)
   const termInstance = useRef<Terminal | null>(null)
   const fitAddon = useRef<FitAddon | null>(null)
@@ -39,11 +41,40 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
     // }
   }
 
+  // Auto-capture refs
+  const captureBufferRef = useRef('')
+  const captureDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const flushCaptureBuffer = () => {
+    const content = captureBufferRef.current.trim()
+    if (!content || content.length < 50) return
+    ipcRenderer?.invoke('context:save-snippet', content, `terminal:${id}`)
+    // Auto-analyze if enabled
+    if (autoAnalyzeContextRef.current) {
+      ipcRenderer?.invoke('context:analyze', content).then((result: any) => {
+        if (result?.success) {
+          window.dispatchEvent(new CustomEvent('context:analysis-complete', {
+            detail: { sessionId: id, analysis: result.analysis }
+          }))
+        }
+      }).catch(() => undefined)
+    }
+    captureBufferRef.current = ''
+  }
+
   // Use a ref to keep track of the latest name to avoid stale closures in useEffect
   const nameRef = useRef(name)
+  const autoCaptureRef = useRef(autoCaptureTerminal)
+  const autoAnalyzeContextRef = useRef(autoAnalyzeContext)
   useEffect(() => {
     nameRef.current = name
   }, [name])
+  useEffect(() => {
+    autoCaptureRef.current = autoCaptureTerminal
+  }, [autoCaptureTerminal])
+  useEffect(() => {
+    autoAnalyzeContextRef.current = autoAnalyzeContext
+  }, [autoAnalyzeContext])
 
   useEffect(() => {
     const handleExport = (e: any) => {
@@ -127,9 +158,21 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
 
   const buildTerminalOptions = (themeId: string, nextFontSize: number) => {
     const preset = getThemePreset(themeId)
+    const backgroundMap: Record<string, string> = {
+      obsidian: '#151210',
+      graphite: '#17191f',
+      ember: '#1b120e',
+      aurora: '#071a1d',
+      porcelain: '#e9eef9',
+      meadow: '#e8f2ea',
+      'catppuccin-latte': '#eff1f7',
+      'catppuccin-frappe': '#303446',
+      'catppuccin-macchiato': '#24273a',
+      'catppuccin-mocha': '#1e1e2e',
+    }
     return {
       theme: {
-        background: 'transparent',
+        background: backgroundMap[themeId] || '#151210',
         ...preset.terminal,
       },
       // Keep terminal geometry stable across themes.
@@ -142,7 +185,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
       cursorStyle: preset.terminalOptions?.cursorStyle ?? 'block',
       cursorWidth: preset.terminalOptions?.cursorWidth ?? 1,
       cursorBlink: true,
-      allowTransparency: true,
+      allowTransparency: false,
     } as const
   }
 
@@ -188,11 +231,21 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
       }
       const text = lines.join('\n')
 
-      // Detect interactive menus (like Inquirer.js or Claude Code)
-      const isInteractive = text.includes('Enter to select') || text.includes('Use arrow keys') || text.includes('?');
+      // Detect interactive menus - require clear indicators, avoid broad "?" matching
+      const hasInteractiveKeywords = text.includes('Enter to select') || text.includes('Use arrow keys') || /\u2191\u2193/.test(text);
+      const hasCheckboxIndicators = /\[[\s\u2588\u2713\u2717xX]+\]/.test(text);
+      const hasConfirmPrompt = /\(y\/n\)|\[y\/N\]|yes\/no|want to proceed/i.test(text);
+      const hasOptionIndicators = /[>❯●◉○]/.test(text);
+      const isInteractive = hasInteractiveKeywords || hasCheckboxIndicators || hasConfirmPrompt || hasOptionIndicators;
       
       if (isInteractive) {
         const linesArr = text.split('\n');
+        // Early exit: dead prompt (shell prompt after options = already completed)
+        const deadPromptIdx = linesArr.reduce((last, line, idx) =>
+          /[%$#]\s*$/.test(line) || /aborted/i.test(line) ? idx : last, -1);
+        if (deadPromptIdx >= 0 && deadPromptIdx > linesArr.length - 5) {
+          return;
+        }
         const options: any[] = [];
         let selectedIndex = 0;
         let question = 'Agent Interaction Required';
@@ -463,12 +516,12 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
         else newTokens = parseFloat(t);
       }
       
-      if ((newCost !== -1 && newCost !== lastDispatchedCost) || 
+      if ((newCost !== -1 && newCost !== lastDispatchedCost) ||
           (newTokens !== -1 && newTokens !== lastDispatchedTokens)) {
-        
+
         lastDispatchedCost = newCost;
         lastDispatchedTokens = newTokens;
-        
+
         window.dispatchEvent(new CustomEvent('session-analytics', {
           detail: {
             sessionId: id,
@@ -476,6 +529,16 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
             tokens: newTokens !== -1 ? newTokens : undefined
           }
         }));
+      }
+
+      // Auto-capture terminal output to context
+      if (autoCaptureRef.current) {
+        captureBufferRef.current += cleanData;
+        if (captureBufferRef.current.length > 20000) {
+          captureBufferRef.current = captureBufferRef.current.slice(-15000);
+        }
+        if (captureDebounceRef.current) clearTimeout(captureDebounceRef.current);
+        captureDebounceRef.current = setTimeout(flushCaptureBuffer, 2000);
       }
 
       const lowerData = data.toLowerCase();
@@ -519,6 +582,8 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName }
     window.addEventListener(`terminal:write:${id}`, handleWriteDirect)
 
     return () => {
+      if (captureDebounceRef.current) clearTimeout(captureDebounceRef.current)
+      if (captureBufferRef.current.trim().length > 50) flushCaptureBuffer()
       ipcRenderer.removeListener(`pty:data:${id}`, handleData)
       window.removeEventListener('resize', handleResize)
       window.removeEventListener(`terminal:write:${id}`, handleWriteDirect)

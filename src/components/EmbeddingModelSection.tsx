@@ -3,6 +3,7 @@ import { Check, RefreshCw, ChevronDown, VectorSquare, Wifi, WifiOff, HardDrive, 
 import { type Provider } from '../types/agent';
 import { type EmbeddingModelConfig, type OllamaModelInfo } from '../types/app-settings';
 import { ProviderIcon } from './ProviderIcon';
+import { CONNECTION_STATUS_BADGE_CLASSES, CONNECTION_STATUS_LABELS, CONNECTION_TEST_BUTTON_LABELS } from '../lib/ui-copy';
 
 const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
@@ -59,6 +60,7 @@ export function EmbeddingModelSection({ config, providers, onUpdate, onTest }: P
       source,
       providerId: source === 'provider' ? '' : undefined,
       customBaseUrl: source === 'custom' ? '' : undefined,
+      customEmbeddingEndpoint: source === 'custom' ? '' : undefined,
       customApiKey: source === 'custom' ? '' : undefined,
       model: '',
       status: 'unknown',
@@ -81,18 +83,9 @@ export function EmbeddingModelSection({ config, providers, onUpdate, onTest }: P
   };
 
   const statusBadge = () => {
-    const cls: Record<string, string> = {
-      success: 'bg-green-500/20 text-green-400',
-      error: 'bg-red-500/20 text-red-400',
-      testing: 'bg-yellow-500/20 text-yellow-400',
-      unknown: 'bg-gray-500/20 text-gray-400',
-    };
-    const label: Record<string, string> = {
-      success: '可用', error: '错误', testing: '测试中', unknown: '未测试',
-    };
     return (
-      <span className={`text-[10px] px-2 py-0.5 rounded-full ${cls[config.status]}`}>
-        {label[config.status]}
+      <span className={`text-[10px] px-2 py-0.5 rounded-full ${CONNECTION_STATUS_BADGE_CLASSES[config.status]}`}>
+        {CONNECTION_STATUS_LABELS[config.status]}
       </span>
     );
   };
@@ -108,7 +101,7 @@ export function EmbeddingModelSection({ config, providers, onUpdate, onTest }: P
       ? !!config.model
       : config.source === 'provider'
         ? !!config.providerId && !!config.model
-        : !!config.customBaseUrl && !!config.model;
+        : !!(config.customBaseUrl || config.customEmbeddingEndpoint) && !!config.model;
 
   // Models to show in the local dropdown: prefer embedding models, show all as fallback
   const displayModels = ollamaEmbeddingModels.length > 0 ? ollamaEmbeddingModels : ollamaModels;
@@ -299,6 +292,16 @@ export function EmbeddingModelSection({ config, providers, onUpdate, onTest }: P
               />
             </div>
             <div>
+              <label className="block text-xs font-medium text-white/60 mb-1.5">Embedding Endpoint（可选）</label>
+              <input
+                type="text"
+                value={config.customEmbeddingEndpoint || ''}
+                onChange={e => handleFieldChange('customEmbeddingEndpoint', e.target.value)}
+                className="w-full px-4 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm font-mono focus:border-white/20 focus:outline-none transition-colors"
+                placeholder="/embeddings 或 https://example.com/v1/embeddings"
+              />
+            </div>
+            <div>
               <label className="block text-xs font-medium text-white/60 mb-1.5">API Key</label>
               <input
                 type="password"
@@ -322,6 +325,11 @@ export function EmbeddingModelSection({ config, providers, onUpdate, onTest }: P
               className="w-full px-4 py-2.5 rounded-xl bg-black/40 border border-white/10 text-white text-sm font-mono focus:border-white/20 focus:outline-none transition-colors"
               placeholder="text-embedding-3-small"
             />
+            {config.source === 'provider' && selectedProvider?.embeddingEndpoint && (
+              <p className="mt-1 text-[10px] text-white/40">
+                当前将使用供应商配置里的 Embedding Endpoint：{selectedProvider.embeddingEndpoint}
+              </p>
+            )}
           </div>
         )}
         <div>
@@ -355,9 +363,9 @@ export function EmbeddingModelSection({ config, providers, onUpdate, onTest }: P
           }`}
         >
           {config.status === 'testing' ? (
-            <><RefreshCw size={14} className="animate-spin" /> 测试中...</>
+            <><RefreshCw size={14} className="animate-spin" /> {CONNECTION_TEST_BUTTON_LABELS.testing}</>
           ) : (
-            <><Check size={14} /> 测试 Embedding</>
+            <><Check size={14} /> {CONNECTION_TEST_BUTTON_LABELS.unknown}</>
           )}
         </button>
       </div>

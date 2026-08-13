@@ -1,3 +1,6 @@
+export * from './capability';
+export * from './ui-intent';
+
 // Agent Extension Types — Shared types for UI components
 
 // ── Prompts ───────────────────────────────────────────────────────
@@ -49,7 +52,7 @@ export interface RetrievalResult {
 // ── Workflows ─────────────────────────────────────────────────────
 export interface WorkflowNode {
   id: string;
-  type: 'start' | 'end' | 'llm' | 'skill' | 'knowledge' | 'prompt' | 'condition' | 'parallel' | 'code' | 'document';
+  type: 'start' | 'end' | 'llm' | 'skill' | 'knowledge' | 'prompt' | 'condition' | 'parallel' | 'code' | 'document' | 'context' | 'browser' | 'workflow';
   label: string;
   config: Record<string, unknown>;
   position?: { x: number; y: number };
@@ -111,6 +114,71 @@ export interface ContextOverview {
   sessions: ContextArtifact[];
   snippets: ContextArtifact[];
   projects: ContextArtifact[];
+}
+
+export interface MemoryRecord {
+  id: string;
+  scope: 'global' | 'project' | 'task' | 'session';
+  kind: 'goal' | 'constraint' | 'decision' | 'issue' | 'artifact' | 'style' | 'next_step' | 'summary';
+  title: string;
+  summary: string;
+  details?: string;
+  salience: number;
+  status: 'active' | 'superseded' | 'archived';
+  source_type: 'doc' | 'session' | 'tool' | 'workflow' | 'manual';
+  source_ref: string;
+  evidence_refs: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ContextSnapshot {
+  id: string;
+  session_id: string;
+  task_id: string;
+  version: number;
+  summary_block: string;
+  token_estimate: number;
+  drift_score: number;
+  status: 'active' | 'candidate' | 'replaced';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SessionEvent {
+  id: string;
+  session_id: string;
+  event_type: 'session_start' | 'session_end' | 'user_prompt' | 'tool_call' | 'tool_result' | 'assistant_reply' | 'manual_capture';
+  payload: string;
+  token_estimate: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ContextPacket {
+  anchorBlock: string;
+  workingBlock: string;
+  episodicBlock: string;
+  retrievalBlock: string;
+  styleBlock?: string;
+  tokenBudget: {
+    total: number;
+    reservedForResponse: number;
+    usedByContext: number;
+  };
+  refs: string[];
+}
+
+export interface DriftConflict {
+  type: 'goal' | 'constraint' | 'style' | 'scope';
+  message: string;
+  anchorRef?: string;
+}
+
+export interface DriftCheckResult {
+  aligned: boolean;
+  score: number;
+  conflicts: DriftConflict[];
 }
 
 // ── ReAct ─────────────────────────────────────────────────────────

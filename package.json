@@ -9,7 +9,7 @@
   "scripts": {
     "postinstall": "electron-builder install-app-deps || true",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node -e \"const fs=require('fs'),src='public/webview-preload.js',dst='dist-electron/webview-preload.js';fs.existsSync(src)&&!fs.existsSync(dst)&&fs.copyFileSync(src,dst)\"",
     "pack": "npm run build && electron-builder",
     "pack:mac": "npm run build && electron-builder --mac",
     "pack:win": "npm run build && electron-builder --win",

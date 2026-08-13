@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
-import { ArrowUp, CheckSquare, Clock3, Copy, File, FilePlus2, Folder, FolderPlus, PanelRightClose, RefreshCw, Search, Star, Trash2 } from 'lucide-react';
+import { ArrowUp, CheckSquare, Clock3, Copy, File, FilePlus2, Folder, FolderPlus, RefreshCw, Search, Star } from 'lucide-react';
 import { type FileEntry } from '../types/agent-extension';
-import { UIBadge, UIButton, UIInput, UIPanel } from './ui';
+import { UIBadge, UIButton, UIInput } from './ui';
 
 interface FileExplorerPanelProps {
   currentDir: string;
@@ -14,9 +14,6 @@ interface FileExplorerPanelProps {
   onSelectPaths: (paths: string[]) => void;
   onCreateFile: () => void;
   onCreateFolder: (name: string) => void;
-  onDelete: (path: string) => void;
-  onCopyPath: (path: string) => void;
-  onToggleVisibility?: () => void;
 }
 
 const formatSize = (size?: number) => {
@@ -37,9 +34,6 @@ export function FileExplorerPanel({
   onSelectPaths,
   onCreateFile,
   onCreateFolder,
-  onDelete,
-  onCopyPath,
-  onToggleVisibility,
 }: FileExplorerPanelProps) {
   const [query, setQuery] = useState('');
   const [favorites, setFavorites] = useState<string[]>([]);
@@ -59,7 +53,6 @@ export function FileExplorerPanel({
     });
   }, [files, query]);
 
-  const activeEntry = filteredFiles.find(file => file.path === activeFile) || files.find(file => file.path === activeFile) || null;
   const folderCount = files.filter(file => file.isDirectory).length;
   const breadcrumbs = currentDir.split('/').filter(Boolean);
 
@@ -72,30 +65,25 @@ export function FileExplorerPanel({
   };
 
   return (
-    <div className="h-full w-full border-l border-[var(--panel-border)] flex flex-col z-40 bg-[var(--panel-bg)] backdrop-blur-xl relative">
+    <div className="relative z-40 flex h-full w-full flex-col bg-transparent">
       {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
       <div className="absolute top-0 left-0 w-full h-8 z-50 pointer-events-none" style={{ WebkitAppRegion: 'drag' } as any}></div>
 
-      <div className="border-b border-[var(--panel-border)] px-4 py-4">
+      <div className="border-b border-[color:color-mix(in_srgb,var(--panel-border)_56%,transparent)] px-5 py-4">
         <div className="flex items-center justify-between gap-3">
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="text-[11px] tracking-[0.22em] text-[var(--text-secondary)]">文件系统</div>
-            <div className="mt-1 text-lg font-semibold text-[var(--text-primary)] truncate">{currentDir.split('/').pop() || '/'}</div>
+            <div className="mt-2 truncate text-[1.55rem] font-semibold leading-tight text-[var(--text-primary)]">{currentDir.split('/').pop() || '/'}</div>
           </div>
-          <div className="flex items-center gap-1">
-            {onToggleVisibility && (
-              <UIButton onClick={onToggleVisibility} tone="ghost" size="icon" className="text-[var(--text-secondary)]" title="隐藏文件栏">
-                <PanelRightClose size={16} />
-              </UIButton>
-            )}
-            <UIButton onClick={onGoUp} tone="ghost" size="icon" className="text-[var(--text-secondary)]" title="返回上一级">
-              <ArrowUp size={16} />
+          <div className="flex shrink-0 items-center gap-1">
+            <UIButton onClick={onGoUp} tone="ghost" size="icon" className="h-8 w-8 rounded-lg text-[var(--text-secondary)]" title="返回上一级">
+              <ArrowUp size={15} />
             </UIButton>
-            <UIButton onClick={onRefresh} tone="ghost" size="icon" className="text-[var(--text-secondary)]" title="刷新">
-              <RefreshCw size={16} />
+            <UIButton onClick={onRefresh} tone="ghost" size="icon" className="h-8 w-8 rounded-lg text-[var(--text-secondary)]" title="刷新">
+              <RefreshCw size={15} />
             </UIButton>
-            <UIButton onClick={onCreateFile} tone="ghost" size="icon" className="text-[var(--text-secondary)]" title="新建文件">
-              <FilePlus2 size={16} />
+            <UIButton onClick={onCreateFile} tone="ghost" size="icon" className="h-8 w-8 rounded-lg text-[var(--text-secondary)]" title="新建文件">
+              <FilePlus2 size={15} />
             </UIButton>
             <UIButton
               onClick={() => {
@@ -104,36 +92,47 @@ export function FileExplorerPanel({
               }}
               tone="ghost"
               size="icon"
-              className="text-[var(--text-secondary)]"
+              className="h-8 w-8 rounded-lg text-[var(--text-secondary)]"
               title="新建文件夹"
             >
-              <FolderPlus size={16} />
+              <FolderPlus size={15} />
             </UIButton>
           </div>
         </div>
 
-        <div className="mt-3 rounded-2xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 py-2 text-[11px] text-[var(--text-secondary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.02)] overflow-x-auto no-scrollbar">
-          / {breadcrumbs.join(' / ') || currentDir}
+        <div className="shell-surface-soft mt-5 flex items-center gap-3 rounded-[1.25rem] border border-[var(--panel-border)] px-4 py-3 text-[11px] text-[var(--text-secondary)] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+          <div className="min-w-0 flex-1 overflow-x-auto whitespace-nowrap no-scrollbar">
+            / {breadcrumbs.join(' / ') || currentDir}
+          </div>
+          <UIButton
+            onClick={() => void navigator.clipboard.writeText(currentDir)}
+            tone="ghost"
+            size="icon"
+            className="h-7 w-7 shrink-0 rounded-lg text-[var(--text-secondary)]"
+            title="复制路径"
+          >
+            <Copy size={13} />
+          </UIButton>
         </div>
 
-        <div className="mt-3 relative">
+        <div className="mt-4 relative">
           <Search size={14} className="absolute left-3 top-2.5 text-[var(--text-secondary)]" />
           <UIInput
             value={query}
             onChange={event => setQuery(event.target.value)}
             placeholder="搜索文件、目录、扩展名"
-            className="h-9 bg-[var(--surface-muted)] pl-9 pr-3 text-xs text-[var(--text-primary)]"
+            className="h-9 pl-9 pr-3 text-xs"
           />
         </div>
 
-        <div className="mt-3 flex items-center gap-2 text-[11px] text-[var(--text-secondary)]">
-          <UIBadge className="bg-[var(--surface-muted)] text-[var(--text-secondary)] px-2.5 py-1">项目 {files.length}</UIBadge>
-          <UIBadge className="bg-[var(--surface-muted)] text-[var(--text-secondary)] px-2.5 py-1">目录 {folderCount}</UIBadge>
-          <UIBadge className="bg-[var(--surface-muted)] text-[var(--text-secondary)] px-2.5 py-1">已选 {selectedPaths.length}</UIBadge>
+        <div className="mt-4 flex items-center gap-2 text-[11px] text-[var(--text-secondary)]">
+          <UIBadge className="shell-surface-soft px-2.5 py-1 text-[var(--text-secondary)]">项目 {files.length}</UIBadge>
+          <UIBadge className="shell-surface-soft px-2.5 py-1 text-[var(--text-secondary)]">目录 {folderCount}</UIBadge>
+          <UIBadge className="shell-surface-soft px-2.5 py-1 text-[var(--text-secondary)]">已选 {selectedPaths.length}</UIBadge>
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3">
+      <div className="flex-1 overflow-y-auto px-4 py-5">
         {filteredFiles.map(file => {
           const isSelected = selectedPaths.includes(file.path);
           const isFavorite = favorites.includes(file.path);
@@ -141,10 +140,10 @@ export function FileExplorerPanel({
           return (
             <div
               key={file.path}
-              className={`group mb-2 flex items-start gap-3 rounded-2xl border px-4 py-3 cursor-pointer transition-colors ${
+              className={`group mb-3 flex cursor-pointer items-start gap-3 rounded-[1.35rem] border px-4 py-3.5 transition-all ${
                 activeFile === file.path
-                  ? 'border-[var(--panel-border-glow)] bg-[var(--surface-muted)]'
-                  : 'border-[var(--panel-border)] bg-transparent hover:bg-[var(--surface-muted)]/70'
+                  ? 'border-[var(--panel-border-glow)] bg-[color:color-mix(in_srgb,var(--surface-strong)_84%,transparent)] shadow-[0_18px_34px_-28px_var(--shadow-color)]'
+                  : 'border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-strong)_48%,transparent)] hover:border-[var(--panel-border-glow)]/70 hover:bg-[color:color-mix(in_srgb,var(--surface-strong)_72%,transparent)]'
               }`}
               onClick={() => onOpen(file)}
             >
@@ -163,7 +162,7 @@ export function FileExplorerPanel({
                   {file.isDirectory
                     ? <Folder size={15} className="shrink-0 text-[var(--accent)]" />
                     : <File size={15} className="shrink-0 text-[var(--text-secondary)]" />}
-                  <span className="truncate text-[12.5px] font-medium text-[var(--text-primary)]">{file.name}</span>
+                  <span className="truncate text-[14px] font-medium text-[var(--text-primary)]">{file.name}</span>
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--text-secondary)]">
                   <span>{file.isDirectory ? '文件夹' : (file.extension ? `${file.extension.toUpperCase()} 文件` : '文件')}</span>
@@ -196,31 +195,6 @@ export function FileExplorerPanel({
           </div>
         )}
       </div>
-
-      <UIPanel className="rounded-none border-x-0 border-b-0 border-t border-[var(--panel-border)] bg-[var(--surface-strong)]/72 p-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-[11px] tracking-[0.18em] text-[var(--text-secondary)]">当前文件</div>
-            <div className="mt-1 text-sm font-semibold text-[var(--text-primary)] truncate">{activeEntry?.name || '未选中文件'}</div>
-          </div>
-          {activeEntry && (
-            <div className="flex items-center gap-2">
-              <UIButton onClick={() => onCopyPath(activeEntry.path)} tone="neutral" size="sm" className="bg-[var(--surface-muted)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]">
-                <Copy size={11} className="inline mr-1" />复制路径
-              </UIButton>
-              <UIButton onClick={() => onDelete(activeEntry.path)} tone="danger" size="sm" className="bg-red-500/12 text-red-300 hover:text-red-200">
-                <Trash2 size={11} className="inline mr-1" />删除
-              </UIButton>
-            </div>
-          )}
-        </div>
-        <div className="mt-2 space-y-1 text-[11px] text-[var(--text-secondary)]">
-          <div>路径：{activeEntry?.path || currentDir}</div>
-          <div>大小：{activeEntry?.isDirectory ? '--' : formatSize(activeEntry?.size)}</div>
-          <div>修改：{activeEntry?.mtime ? new Date(activeEntry.mtime).toLocaleString() : '--'}</div>
-          <div>收藏：{favorites.length}</div>
-        </div>
-      </UIPanel>
     </div>
   );
 }
