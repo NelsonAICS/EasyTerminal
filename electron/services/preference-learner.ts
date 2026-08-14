@@ -1,7 +1,7 @@
 // Preference Learner — Analyze user interactions to learn preferences
 // Analyzes: tone, coding style, tool preferences, communication patterns
 
-import { dbAll, dbInsert, dbUpdate, dbRun, dbQuery, generateId } from './database';
+import { dbAll, dbInsert, dbRun, dbQuery, generateId } from './database';
 
 export interface UserPreference {
   id: string;
@@ -184,4 +184,3 @@ export function buildStyleBlock(): string {
     ? `\n[\u7528\u6237\u5047\u5957]\n${sections.join('\n')}`
     : '';
 }
-

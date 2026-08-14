@@ -21,9 +21,10 @@ export function ProxyToggle({ appId, appName, providerConfigured }: ProxyToggleP
   const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null;
 
   useEffect(() => {
+    const ipc = window.require ? window.require('electron').ipcRenderer : null;
     // Get initial status
-    if (ipcRenderer) {
-      ipcRenderer.invoke('proxy:status').then((res: ProxyStatus) => {
+    if (ipc) {
+      ipc.invoke('proxy:status').then((res: ProxyStatus) => {
         setStatus(res);
       });
     }

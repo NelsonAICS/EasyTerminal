@@ -105,7 +105,6 @@ ipcRenderer.on('inject-plugins', (event, scripts) => {
     scripts.forEach(script => {
       if (script && typeof script === 'string' && script.trim()) {
         try {
-          // eslint-disable-next-line no-eval
           eval(script);
         } catch (err) {
           console.error('[EasyTerminal Plugin] Script error:', err.message);

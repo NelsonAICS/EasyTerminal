@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { Check, RefreshCw, ChevronDown, VectorSquare, Wifi, WifiOff, HardDrive, Cloud, Link } from 'lucide-react';
 import { type Provider } from '../types/agent';
 import { type EmbeddingModelConfig, type OllamaModelInfo } from '../types/app-settings';
@@ -33,7 +33,7 @@ export function EmbeddingModelSection({ config, providers, onUpdate, onTest }: P
   const selectedProvider = providers.find(p => p.id === config.providerId);
 
   // Detect Ollama status
-  const checkOllama = async () => {
+  const checkOllama = useCallback(async () => {
     if (!ipcRenderer) return;
     setCheckingOllama(true);
     try {
@@ -46,13 +46,13 @@ export function EmbeddingModelSection({ config, providers, onUpdate, onTest }: P
     } finally {
       setCheckingOllama(false);
     }
-  };
+  }, [config.localUrl]);
 
   useEffect(() => {
     if (config.source === 'local') {
       checkOllama();
     }
-  }, [config.source, config.localUrl]);
+  }, [config.source, checkOllama]);
 
   const handleSourceChange = (source: EmbeddingSource) => {
     onUpdate({

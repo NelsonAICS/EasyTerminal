@@ -4,7 +4,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { app } from 'electron';
-import { dbAll, dbGet, dbInsert, dbDelete, dbUpdate, generateId, dbQuery } from './database';
+import { dbAll, dbGet, dbInsert, dbDelete, dbUpdate, dbQuery } from './database';
 import { generateEmbedding, cosineSimilarity, type EmbeddingConfig, serializeEmbedding, deserializeEmbedding } from './vector-store';
 
 export interface Skill {

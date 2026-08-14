@@ -162,9 +162,8 @@ export function getIconMetadata(name: string): IconMetadata | undefined {
   return iconMetadata[name];
 }
 
-export function getIconUrl(_name: string): string | undefined {
-  // For URL-based icons (not used in EasyTerminal)
-  return undefined;
+export function getIconUrl(name: string): string | undefined {
+  return isUrlIcon(name) ? name : undefined;
 }
 
 export function isUrlIcon(name: string): boolean {

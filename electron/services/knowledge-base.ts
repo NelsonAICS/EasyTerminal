@@ -2,9 +2,9 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { dbAll, dbGet, dbInsert, dbDelete, dbUpdate, dbQuery, dbRun, generateId } from './database';
+import { dbAll, dbGet, dbInsert, dbDelete, dbQuery, dbRun, generateId } from './database';
 import { generateEmbedding, type EmbeddingConfig, serializeEmbedding, deserializeEmbedding, cosineSimilarity } from './vector-store';
-import { parseDocument, type Chunk } from './document-parser';
+import { parseDocument } from './document-parser';
 
 export interface KnowledgeDoc {
   id: string;

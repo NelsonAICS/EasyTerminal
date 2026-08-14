@@ -1,4 +1,4 @@
-import { dbAll, dbInsert, dbQuery, dbRun, dbUpdate, generateId } from './database';
+import { dbInsert, dbQuery, dbRun, dbUpdate, generateId } from './database';
 
 export interface MemoryRecord {
   id: string;

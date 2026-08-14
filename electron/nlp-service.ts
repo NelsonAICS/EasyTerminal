@@ -1,6 +1,11 @@
 import * as fs from 'fs';
 import { join } from 'path';
 
+interface TfidfIndex {
+  docCount: number;
+  df: Record<string, number>;
+}
+
 export class NLPService {
   private indexPath: string;
   private segmenter: Intl.Segmenter;
@@ -26,13 +31,13 @@ export class NLPService {
       .filter(s => s.isWordLike)
       .map(s => s.segment.toLowerCase())
       // 过滤停用词、单字符、纯数字
-      .filter(w => !this.stopWords.has(w) && w.length > 1 && !/^[\d\.]+$/.test(w));
+      .filter(w => !this.stopWords.has(w) && w.length > 1 && !/^[\d.]+$/.test(w));
   }
 
-  private loadIndex() {
+  private loadIndex(): TfidfIndex {
     if (fs.existsSync(this.indexPath)) {
       try {
-        return JSON.parse(fs.readFileSync(this.indexPath, 'utf-8'));
+        return JSON.parse(fs.readFileSync(this.indexPath, 'utf-8')) as TfidfIndex;
       } catch (e) {
         console.error('[NLPService] failed to load index', e);
       }
@@ -40,7 +45,7 @@ export class NLPService {
     return { docCount: 0, df: {} };
   }
 
-  private saveIndex(index: any) {
+  private saveIndex(index: TfidfIndex) {
     try {
       fs.writeFileSync(this.indexPath, JSON.stringify(index), 'utf-8');
     } catch (e) {

@@ -58,7 +58,7 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
         ipcRenderer.invoke('store:get', 'app_settings', DEFAULT_APP_SETTINGS),
         ipcRenderer.invoke('system:scan-api-keys')
       ]).then(([agentsData, providersData, appSettingsData, scannedKeys]: [AgentConfig[], Provider[], AppSettingsConfig, Record<string, string>]) => {
-        let loadedAgents = agentsData?.length ? agentsData : DEFAULT_AGENTS;
+        const loadedAgents = agentsData?.length ? agentsData : DEFAULT_AGENTS;
         let loadedProviders = providersData?.length ? providersData : DEFAULT_PROVIDERS;
 
         if (scannedKeys && Object.keys(scannedKeys).length > 0) {
@@ -74,13 +74,8 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
         setProviders(loadedProviders);
         setAppSettings(appSettingsData || DEFAULT_APP_SETTINGS);
         setActiveAppId('easyterminal');
-        const firstAgent = loadedAgents[0];
-        if (firstAgent) {
-          setActiveProviderId(firstAgent.providerId);
-        }
-        if (loadedProviders.length > 0 && !activeProviderId) {
-          setActiveProviderId(loadedProviders[0].id);
-        }
+        const initialProviderId = loadedAgents[0]?.providerId || loadedProviders[0]?.id;
+        if (initialProviderId) setActiveProviderId(initialProviderId);
       });
     }
   }, []);

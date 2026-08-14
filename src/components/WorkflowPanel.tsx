@@ -1,4 +1,3 @@
-/* eslint-disable react-hooks/set-state-in-effect, react-hooks/preserve-manual-memoization */
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
@@ -1312,7 +1311,7 @@ export function WorkflowPanel({
       setExecutionResult(result as typeof executionResult);
       setShowExecutionResult(true);
       await loadData();
-    } catch (err) {
+    } catch {
       setExecutionResult({
         success: false,
         output: null,

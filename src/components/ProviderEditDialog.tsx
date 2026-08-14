@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { X, KeyRound, Server, RefreshCw, Check } from 'lucide-react';
 import { type Provider } from '../types/agent';
 import { ProviderIcon } from './ProviderIcon';
@@ -40,41 +40,38 @@ export function ProviderEditDialog({
   onSave,
   onTest
 }: ProviderEditDialogProps) {
-  const [formData, setFormData] = useState<Provider>({
-    id: '',
-    name: '',
+  if (!isOpen) return null;
+  return (
+    <ProviderEditDialogContent
+      key={provider?.id ?? 'new-provider'}
+      provider={provider}
+      onClose={onClose}
+      onSave={onSave}
+      onTest={onTest}
+    />
+  );
+}
+
+function ProviderEditDialogContent({
+  provider,
+  onClose,
+  onSave,
+  onTest,
+}: Omit<ProviderEditDialogProps, 'isOpen'>) {
+  const [formData, setFormData] = useState<Provider>(() => provider ?? ({
+    id: 'custom_' + Date.now(),
+    name: '自定义供应商',
     icon: 'custom',
-    baseUrl: '',
+    baseUrl: 'https://api.example.com/v1',
     chatEndpoint: '',
     embeddingEndpoint: '',
     apiKey: '',
-    models: '',
+    models: 'gpt-4o',
     status: 'unknown',
-    description: '',
+    description: '自定义 API 供应商',
     category: 'custom',
     apiFormat: 'openai_chat'
-  });
-
-  useEffect(() => {
-    if (provider) {
-      setFormData(provider);
-    } else {
-      setFormData({
-        id: 'custom_' + Date.now(),
-        name: '自定义供应商',
-        icon: 'custom',
-        baseUrl: 'https://api.example.com/v1',
-        chatEndpoint: '',
-        embeddingEndpoint: '',
-        apiKey: '',
-        models: 'gpt-4o',
-        status: 'unknown',
-        description: '自定义 API 供应商',
-        category: 'custom',
-        apiFormat: 'openai_chat'
-      });
-    }
-  }, [provider, isOpen]);
+  }));
 
   const handleChange = (field: keyof Provider, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value, status: 'unknown', errorMessage: undefined }));
@@ -94,8 +91,6 @@ export function ProviderEditDialog({
     const result = await onTest(formData);
     setFormData(prev => ({ ...prev, ...result }));
   };
-
-  if (!isOpen) return null;
 
   const isTesting = formData.status === 'testing';
   const canTest = formData.apiKey && !isTesting;

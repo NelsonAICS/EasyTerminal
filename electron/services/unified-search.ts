@@ -78,7 +78,6 @@ export async function unifiedSearch(options: UnifiedSearchOptions): Promise<Unif
 
   const moduleResults = await Promise.allSettled(searchPromises);
 
-  let resultIndex = 0;
   const modulesList = activeModules;
 
   for (let i = 0; i < moduleResults.length; i++) {

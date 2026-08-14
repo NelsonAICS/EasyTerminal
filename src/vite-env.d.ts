@@ -6,6 +6,9 @@ declare module '*.svg' {
 }
 
 interface ElectronAPI {
+  agentRespond: (response: InteractionResponseRequest) => Promise<InteractionResponseResult>
+  setIslandInteractive: (request: IslandInteractiveRequest) => Promise<{ ok: boolean; focused?: boolean; code?: string }>
+  jumpToTerminal: (terminalSessionId: string) => Promise<{ ok: boolean; code?: string }>
   // Preference learning
   'preference:learn-prompt': (prompt: string) => Promise<void>
   'preference:learn-skill': (skillId: string, skillName: string) => Promise<void>
@@ -24,6 +27,27 @@ interface ElectronAPI {
   'search:unified': (query: string, modules?: string[], topK?: number) => Promise<UnifiedSearchResponse>
   // Workflow Browser
   'workflow:browser-execute': (options: { url: string; script: string; timeout?: number }) => Promise<string>
+}
+
+interface InteractionResponseRequest {
+  interactionId: string
+  terminalSessionId: string
+  revision: number
+  action: string
+  value?: string | string[]
+  reason?: string
+}
+
+interface InteractionResponseResult {
+  ok: boolean
+  code?: string
+  message?: string
+}
+
+interface IslandInteractiveRequest {
+  interactionId: string
+  interactive: boolean
+  reason: 'composer-focus' | 'composer-blur' | 'action-complete'
 }
 
 interface PreferenceRecord {

@@ -62,6 +62,11 @@ interface Session {
   agentId: string
 }
 
+interface WebviewElement extends HTMLElement {
+  setZoomFactor: (factor: number) => void
+  send: (channel: string, ...args: unknown[]) => void
+}
+
 interface InputSuggestion {
   id: string
   label: string
@@ -256,7 +261,7 @@ function formatAgentTerminalResult(result: {
 function App() {
   const mainAreaRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const webviewRef = useRef<any>(null)
+  const webviewRef = useRef<WebviewElement | null>(null)
   const panelDragRef = useRef<{ type: 'workspace' | 'explorer'; pointerId: number } | null>(null)
   const terminalAgentCommandRunnerRef = useRef<((command: string) => Promise<void>) | null>(null)
   const autocompleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -672,10 +677,10 @@ function App() {
     focusInputBox()
   }
 
-  const openManualCenter = (search = '') => {
+  const openManualCenter = useCallback((search = '') => {
     setManualInitialSearch(search.trim())
     setShowHelp(true)
-  }
+  }, [])
 
   const writeTerminalSystemMessage = useCallback((title: string, body: string, tone: 'info' | 'success' | 'error' = 'info') => {
     const color =
@@ -769,7 +774,7 @@ function App() {
       ipcRenderer.removeListener('workflow:status', handleWorkflowStatus)
       ipcRenderer.removeListener('workflow:log', handleWorkflowLog)
     }
-  }, [ipcRenderer, formatWorkflowNodeTitle, resolveWorkflowLogTone, writeTerminalSystemMessage])
+  }, [formatWorkflowNodeTitle, resolveWorkflowLogTone, writeTerminalSystemMessage])
 
   const primaryThemePresets = THEME_PRESETS.filter(themePreset => !themePreset.id.startsWith('catppuccin-'))
   const catppuccinThemePresets = THEME_PRESETS.filter(themePreset => themePreset.id.startsWith('catppuccin-'))
@@ -923,6 +928,15 @@ function App() {
       ipcRenderer?.removeListener('menu:action', handleMenuAction)
     }
   }, [currentDir, activeSessionId, openEditorPath])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    const handleTerminalFocus = (_event: unknown, sessionId: string) => {
+      if (sessions.some(session => session.id === sessionId)) setActiveSessionId(sessionId)
+    }
+    ipcRenderer.on('terminal:focus-session', handleTerminalFocus)
+    return () => ipcRenderer.removeListener('terminal:focus-session', handleTerminalFocus)
+  }, [sessions])
 
 
 
@@ -1533,7 +1547,7 @@ function App() {
       await persistTerminalAgentActivity(trimmed, message, 'error', (['agent', 'skill', 'prompt', 'workflow', 'context'].includes(command) ? command : 'help') as 'agent' | 'skill' | 'prompt' | 'workflow' | 'context' | 'help')
       return true
     }
-  }, [activeSessionId, openManualCenter, persistTerminalAgentActivity, recordRecentTerminalAgentCommand, writeTerminalSystemMessage, setStreamingIntentId])
+  }, [activeSessionId, deriveWorkflowCommand, openManualCenter, persistTerminalAgentActivity, recordRecentTerminalAgentCommand, writeTerminalSystemMessage, setStreamingIntentId])
 
   const executeRecentTerminalAgentCommand = useCallback(async (command: string) => {
     const handled = await runTerminalAgentCommand(command)
@@ -1756,6 +1770,7 @@ function App() {
         ? { ...session, name: nextName }
         : session
     )))
+    if (ipcRenderer) ipcRenderer.send('pty:rename', editingSessionId, nextName)
     setEditingSessionId(null)
     setEditingSessionName('')
   }

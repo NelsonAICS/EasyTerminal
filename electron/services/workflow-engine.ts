@@ -479,13 +479,6 @@ async function executeNode(
         }
       }
 
-      const subContext: ExecutionContext = {
-        variables: subVariables,
-        results: new Map(),
-        logs: [],
-        nestedDepth: nestedDepth + 1,
-      };
-
       context.logs.push({ nodeId: node.id, type: 'info', message: `Executing nested workflow: ${subWorkflowId} (depth ${nestedDepth + 1})`, timestamp });
 
       const subResult = await executeWorkflow(subWorkflowId, llmConfig, subVariables, embeddingConfig);

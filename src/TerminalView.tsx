@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { ImageAddon } from '@xterm/addon-image'
@@ -9,11 +9,19 @@ import { getThemePreset } from './lib/themes'
 
 declare global {
   interface Window {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     require?: any;
   }
 }
 
-const ipcRenderer = window.require ? window.require('electron').ipcRenderer : null
+interface TerminalIpc {
+  invoke: (channel: string, ...args: unknown[]) => Promise<unknown>
+  send: (channel: string, ...args: unknown[]) => void
+  on: (channel: string, listener: (event: unknown, data: string) => void) => void
+  removeListener: (channel: string, listener: (event: unknown, data: string) => void) => void
+}
+
+const ipcRenderer = (window.require ? window.require('electron').ipcRenderer : null) as TerminalIpc | null
 
 interface TerminalViewProps {
   id: string
@@ -34,7 +42,8 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
   // const [agentState, setAgentState] = useState<AgentState>('idle')
   // const agentStateRef = useRef<AgentState>('idle')
 
-  const updateAgentState = (_newState: any) => {
+  const updateAgentState = (newState: string) => {
+    void newState
     // if (agentStateRef.current !== newState) {
     //   agentStateRef.current = newState
     //   setAgentState(newState)
@@ -45,27 +54,13 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
   const captureBufferRef = useRef('')
   const captureDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const flushCaptureBuffer = () => {
-    const content = captureBufferRef.current.trim()
-    if (!content || content.length < 50) return
-    ipcRenderer?.invoke('context:save-snippet', content, `terminal:${id}`)
-    // Auto-analyze if enabled
-    if (autoAnalyzeContextRef.current) {
-      ipcRenderer?.invoke('context:analyze', content).then((result: any) => {
-        if (result?.success) {
-          window.dispatchEvent(new CustomEvent('context:analysis-complete', {
-            detail: { sessionId: id, analysis: result.analysis }
-          }))
-        }
-      }).catch(() => undefined)
-    }
-    captureBufferRef.current = ''
-  }
-
   // Use a ref to keep track of the latest name to avoid stale closures in useEffect
   const nameRef = useRef(name)
   const autoCaptureRef = useRef(autoCaptureTerminal)
   const autoAnalyzeContextRef = useRef(autoAnalyzeContext)
+  const isActiveRef = useRef(isActive)
+  const fontSizeRef = useRef(fontSize)
+  const themeNameRef = useRef(themeName)
   useEffect(() => {
     nameRef.current = name
   }, [name])
@@ -75,86 +70,82 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
   useEffect(() => {
     autoAnalyzeContextRef.current = autoAnalyzeContext
   }, [autoAnalyzeContext])
+  useEffect(() => {
+    isActiveRef.current = isActive
+  }, [isActive])
+  useEffect(() => {
+    fontSizeRef.current = fontSize
+  }, [fontSize])
+  useEffect(() => {
+    themeNameRef.current = themeName
+  }, [themeName])
+
+  const flushCaptureBuffer = useCallback(() => {
+    const content = captureBufferRef.current.trim()
+    if (!content || content.length < 50) return
+    ipcRenderer?.invoke('context:save-snippet', content, `terminal:${id}`)
+    // Auto-analyze if enabled
+    if (autoAnalyzeContextRef.current) {
+      ipcRenderer?.invoke('context:analyze', content).then((result: unknown) => {
+        const analysisResult = result as { success?: boolean; analysis?: unknown }
+        if (analysisResult.success) {
+          window.dispatchEvent(new CustomEvent('context:analysis-complete', {
+            detail: { sessionId: id, analysis: analysisResult.analysis }
+          }))
+        }
+      }).catch(() => undefined)
+    }
+    captureBufferRef.current = ''
+  }, [id])
+
+  const exportToMarkdown = useCallback(() => {
+    if (!termInstance.current || !ipcRenderer) return
+    const buffer = termInstance.current.buffer.active
+    let text = ''
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (line) text += `${line.translateToString(true)}\n`
+    }
+    text = text.replace(/\n+$/, '')
+    ipcRenderer.send('export:save-file', {
+      content: `\`\`\`sh\n${text}\n\`\`\``,
+      format: 'md',
+      defaultName: `terminal-${name}-${Date.now()}.md`,
+    })
+  }, [name])
+
+  const exportToPDF = useCallback(() => {
+    if (!termInstance.current || !ipcRenderer) return
+    const buffer = termInstance.current.buffer.active
+    let text = ''
+    for (let i = 0; i < buffer.length; i++) {
+      const line = buffer.getLine(i)
+      if (line) text += `${line.translateToString(true)}\n`
+    }
+    text = text.replace(/\n+$/, '')
+    const escapeHtml = (unsafe: string) => unsafe
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+    ipcRenderer.send('export:save-pdf', {
+      htmlContent: `<html><body style="white-space:pre-wrap;font-family:monospace">${escapeHtml(text)}</body></html>`,
+      defaultName: `terminal-${name}-${Date.now()}.pdf`,
+    })
+  }, [name])
 
   useEffect(() => {
-    const handleExport = (e: any) => {
-      if (e.detail?.sessionId === id) {
-        if (e.detail.format === 'md') exportToMarkdown();
-        if (e.detail.format === 'pdf') exportToPDF();
-      }
-    };
-    window.addEventListener('export-terminal', handleExport);
-    return () => window.removeEventListener('export-terminal', handleExport);
-  }, [id, name]);
-
-  const exportToMarkdown = () => {
-    if (!termInstance.current || !ipcRenderer) return
-    const buffer = termInstance.current.buffer.active
-    let text = ''
-    for (let i = 0; i < buffer.length; i++) {
-      const line = buffer.getLine(i)
-      if (line) {
-        text += line.translateToString(true) + '\n'
+    const handleExport = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; format?: string }>).detail
+      if (detail?.sessionId === id) {
+        if (detail.format === 'md') exportToMarkdown()
+        if (detail.format === 'pdf') exportToPDF()
       }
     }
-    text = text.replace(/\n+$/, '')
-    const markdown = `\`\`\`sh\n${text}\n\`\`\``
-    ipcRenderer.send('export:save-file', {
-      content: markdown,
-      format: 'md',
-      defaultName: `terminal-${name}-${Date.now()}.md`
-    })
-  }
-
-  const exportToPDF = () => {
-    if (!termInstance.current || !ipcRenderer) return
-    const buffer = termInstance.current.buffer.active
-    let text = ''
-    for (let i = 0; i < buffer.length; i++) {
-      const line = buffer.getLine(i)
-      if (line) {
-        text += line.translateToString(true) + '\n'
-      }
-    }
-    text = text.replace(/\n+$/, '')
-    
-    // Securely escape HTML characters to prevent XSS
-    const escapeHtml = (unsafe: string) => {
-      return unsafe
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#039;");
-    }
-    
-    const safeText = escapeHtml(text)
-
-    const htmlContent = `
-      <html>
-        <head>
-          <meta charset="utf-8">
-          <style>
-            body {
-              background-color: #ffffff;
-              color: #333333;
-              font-family: "JetBrains Mono", "Fira Code", "SF Mono", Consolas, monospace;
-              padding: 20px;
-              font-size: 12px;
-              line-height: 1.5;
-              white-space: pre-wrap;
-              word-wrap: break-word;
-            }
-          </style>
-        </head>
-        <body>${safeText}</body>
-      </html>
-    `
-    ipcRenderer.send('export:save-pdf', {
-      htmlContent,
-      defaultName: `terminal-${name}-${Date.now()}.pdf`
-    })
-  }
+    window.addEventListener('export-terminal', handleExport)
+    return () => window.removeEventListener('export-terminal', handleExport)
+  }, [id, exportToMarkdown, exportToPDF])
 
   const buildTerminalOptions = (themeId: string, nextFontSize: number) => {
     const preset = getThemePreset(themeId)
@@ -192,7 +183,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
   useEffect(() => {
     if (!ipcRenderer || !xtermRef.current) return
 
-    const terminalOptions = buildTerminalOptions(themeName, fontSize)
+    const terminalOptions = buildTerminalOptions(themeNameRef.current, fontSizeRef.current)
 
     const term = new Terminal({
       ...terminalOptions,
@@ -215,250 +206,6 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
 
     ipcRenderer.send('pty:create', id)
 
-    let parseTimeout: ReturnType<typeof setTimeout> | null = null
-    let lastPromptHash: string | null = null
-    
-    const parseTerminalScreen = () => {
-      if (!isActive) return
-      const buffer = term.buffer.active
-      const lines = []
-      const start = Math.max(0, buffer.baseY + buffer.cursorY - 20)
-      const end = Math.min(buffer.length - 1, buffer.baseY + buffer.cursorY + 5)
-      
-      for (let i = start; i <= end; i++) {
-        const line = buffer.getLine(i)
-        if (line) lines.push(line.translateToString(true))
-      }
-      const text = lines.join('\n')
-
-      // Detect interactive menus - require clear indicators, avoid broad "?" matching
-      const hasInteractiveKeywords = text.includes('Enter to select') || text.includes('Use arrow keys') || /\u2191\u2193/.test(text);
-      const hasCheckboxIndicators = /\[[\s\u2588\u2713\u2717xX]+\]/.test(text);
-      const hasConfirmPrompt = /\(y\/n\)|\[y\/N\]|yes\/no|want to proceed/i.test(text);
-      const hasOptionIndicators = /[>❯●◉○]/.test(text);
-      const isInteractive = hasInteractiveKeywords || hasCheckboxIndicators || hasConfirmPrompt || hasOptionIndicators;
-      
-      if (isInteractive) {
-        const linesArr = text.split('\n');
-        // Early exit: dead prompt (shell prompt after options = already completed)
-        const deadPromptIdx = linesArr.reduce((last, line, idx) =>
-          /[%$#]\s*$/.test(line) || /aborted/i.test(line) ? idx : last, -1);
-        if (deadPromptIdx >= 0 && deadPromptIdx > linesArr.length - 5) {
-          return;
-        }
-        const options: any[] = [];
-        let selectedIndex = 0;
-        let question = 'Agent Interaction Required';
-
-        let selectedLineIndex = -1;
-        let isPureInputPrompt = false;
-
-        // Search from bottom to top to always find the newest prompt
-        for (let i = linesArr.length - 1; i >= 0; i--) {
-          // Match standard option line (like > 1. Yes)
-          if (linesArr[i].match(/^[\s│]*[>❯●◉]/)) {
-            selectedLineIndex = i;
-            // If the line only contains the prompt cursor and maybe spaces, it's an input prompt
-            if (linesArr[i].match(/^[\s│]*[>❯●◉]\s*$/)) {
-              isPureInputPrompt = true;
-            }
-            break;
-          }
-        }
-
-        if (selectedLineIndex !== -1 && !isPureInputPrompt) {
-          // Check if there is a shell prompt after this option block, meaning it's a dead prompt
-          let isDeadPrompt = false;
-          for (let i = selectedLineIndex + 1; i < linesArr.length; i++) {
-            if (linesArr[i].match(/[%$#]\s*$/) || linesArr[i].includes('Aborted')) {
-              isDeadPrompt = true;
-              break;
-            }
-          }
-
-          if (isDeadPrompt) {
-            selectedLineIndex = -1;
-          }
-        }
-
-        if (selectedLineIndex !== -1 && !isPureInputPrompt) {
-          // Find options block boundaries FIRST
-          let start = selectedLineIndex;
-          while (start > 0) {
-            const prevLine = linesArr[start - 1];
-            if (prevLine.includes('选择：') || prevLine.includes('?')) break;
-            
-            const hasMarker = /^[\s│]*([>❯●◉○]\s+|\d+\.\s+)/.test(prevLine);
-            const isIndented = /^[\s│]*\s{2,}/.test(prevLine);
-            
-            if (prevLine.trim() !== '' && !hasMarker && !isIndented) break;
-            start--;
-          }
-          
-          let end = selectedLineIndex;
-          while (end < linesArr.length - 1) {
-            if (linesArr[end + 1].includes('Enter to select') || linesArr[end + 1].includes('Esc to cancel')) break;
-            
-            const nextLine = linesArr[end + 1];
-            const hasMarker = /^[\s│]*([>❯●◉○]\s+|\d+\.\s+)/.test(nextLine);
-            const isIndented = /^[\s│]*\s{2,}/.test(nextLine);
-            if (nextLine.trim() !== '' && !hasMarker && !isIndented) break;
-            
-            end++;
-          }
-
-          // Extract question block by finding the nearest non-empty text block above the options
-          let qEnd = start - 1;
-          while (qEnd >= 0 && (linesArr[qEnd].trim() === '' || /^[─-]{2,}$/.test(linesArr[qEnd].trim()) || /^│\s*[─-]{2,}/.test(linesArr[qEnd]))) {
-            qEnd--;
-          }
-          
-          if (qEnd >= 0) {
-            let qStart = qEnd;
-            while (qStart > 0 && linesArr[qStart - 1].trim() !== '' && !/^[─-]{2,}$/.test(linesArr[qStart - 1].trim()) && !/^│\s*[─-]{2,}/.test(linesArr[qStart - 1])) {
-              qStart--;
-            }
-            question = linesArr.slice(qStart, qEnd + 1)
-              .map(l => l.replace(/^[\s│□]+/, '').trim()) // Remove box drawing characters
-              .filter(l => l !== '')
-              .join('\n').trim();
-          }
-          
-          let currentOpt: any = null;
-          for (let i = start; i <= end; i++) {
-            const line = linesArr[i];
-            if (line.trim() === '') continue;
-            
-            // Avoid treating normal log output like "  /Users/nelson" or "│  Agent is thinking" as options
-            const match = line.match(/^[\s│]*([>❯●◉○]\s*)?(?:(\d+)\.\s+)?([^?]+)$/);
-            if (match) {
-              const indicator = match[1];
-              const number = match[2];
-              const label = match[3].trim();
-              const isSelected = !!indicator && ['>', '❯', '●', '◉'].some(c => indicator.includes(c));
-              
-              // It's a valid option if it has a direct indicator or a number
-              if (indicator || number) {
-                // Filter out non-options and common terminal artifacts
-                if (label.length > 0 && 
-                    label !== 'Enter to select' && 
-                    label !== 'Use arrow keys' && 
-                    !label.includes('Security guide') &&
-                    !label.includes('Tips for getting started') &&
-                    !label.includes('Recent activity') &&
-                    !label.startsWith('/') // Exclude paths like /Users/nelson
-                ) {
-                  currentOpt = { label, number, isSelected, description: '' };
-                  options.push(currentOpt);
-                  if (isSelected) selectedIndex = options.length - 1;
-                }
-              } else if (currentOpt && line.match(/^[\s│]{4,}/)) {
-                // Multi-line option description support
-                // Only append if it looks like a description (not a path, not a random log)
-                if (label && !label.startsWith('/')) {
-                  currentOpt.description += (currentOpt.description ? ' ' : '') + label;
-                }
-              }
-            }
-          }
-        } else if (isPureInputPrompt) {
-          // It's a text input prompt, we should look upwards to see if it's asking a multiple choice question (A, B, C etc)
-          let optEnd = selectedLineIndex - 1;
-          while (optEnd >= 0) {
-            const line = linesArr[optEnd].trim();
-            if (line.match(/^([A-Za-z]|\d+)[).]\s+(.+)$/)) break;
-            optEnd--;
-          }
-          
-          if (optEnd >= 0) {
-            let optStart = optEnd;
-            while (optStart >= 0) {
-              const line = linesArr[optStart].trim();
-              if (!line.match(/^([A-Za-z]|\d+)[).]\s+(.+)$/) && line !== '') break;
-              optStart--;
-            }
-            optStart++;
-            
-            for (let i = optStart; i <= optEnd; i++) {
-              const line = linesArr[i].trim();
-              if (line === '') continue;
-              const match = line.match(/^([A-Za-z]|\d+)[).]\s+(.+)$/);
-              if (match) {
-                options.push({
-                  label: match[2].trim(),
-                  number: match[1], // We use the letter/number as the shortcut
-                  isSelected: false,
-                  description: ''
-                });
-              }
-            }
-            
-            let qEnd = optStart - 1;
-            while (qEnd >= 0 && linesArr[qEnd].trim() === '') qEnd--;
-            
-            if (qEnd >= 0) {
-              let qStart = qEnd;
-              while (qStart > 0 && linesArr[qStart - 1].trim() !== '') qStart--;
-              question = linesArr.slice(qStart, qEnd + 1).map(l => l.replace(/^[\s│□]+/, '').trim()).join('\n').trim();
-            }
-          }
-        }
-
-        const isRealPrompt = options.length > 1 || options.some(opt => /^(yes|no|y|n|cancel|exit|confirm|approve|deny|ok|continue)$/i.test(opt.label));
-
-        if (isRealPrompt && (options.some(o => o.isSelected || o.number) || isPureInputPrompt)) {
-          const hasIndicator = options.some(o => o.isSelected);
-          
-          const formattedOptions = options.map((opt, idx) => {
-            let actionStrokes: string[] = [];
-            
-            if (hasIndicator) {
-              const moveOffset = idx - selectedIndex;
-              if (moveOffset > 0) {
-                for(let i=0; i<moveOffset; i++) actionStrokes.push('\x1b[B');
-              } else if (moveOffset < 0) {
-                for(let i=0; i<Math.abs(moveOffset); i++) actionStrokes.push('\x1b[A');
-              }
-              actionStrokes.push('\r');
-            } else if (opt.number) {
-              actionStrokes.push(opt.number, '\r');
-            } else {
-              const lowerLabel = opt.label.toLowerCase();
-              if (lowerLabel.startsWith('yes') || lowerLabel === 'y') {
-                actionStrokes.push('y', '\r');
-              } else if (lowerLabel.startsWith('no') || lowerLabel === 'n') {
-                actionStrokes.push('n', '\r');
-              } else {
-                actionStrokes.push('\r');
-              }
-            }
-
-            return {
-              key: `opt_${idx}`,
-              label: opt.number ? `${opt.number}. ${opt.label}` : opt.label,
-              description: opt.description,
-              actionSequence: actionStrokes
-            };
-          });
-
-          // Create a signature based ONLY on the question, ignoring options changes during answering/animations
-          // Use absoluteLine so if an identical question appears lower in the buffer, it's treated as new
-          const absoluteLine = start + selectedLineIndex;
-          const promptSignature = JSON.stringify({ question, absoluteLine });
-
-          if (promptSignature !== lastPromptHash) {
-            lastPromptHash = promptSignature;
-            updateAgentState('waiting')
-            ipcRenderer.send('island:prompt', { message: question, options: formattedOptions, sessionId: id, sessionName: nameRef.current })
-          }
-        } else {
-          lastPromptHash = null;
-        }
-      } else {
-        lastPromptHash = null;
-      }
-    }
-
     let idleTimeout: ReturnType<typeof setTimeout> | null = null;
     let accumulatedOutput = '';
     let lastDispatchedCost = -1;
@@ -479,12 +226,12 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
       }
     };
 
-    const handleData = (_: any, data: string) => {
+    const handleData = (_event: unknown, data: string) => {
       term.write(data)
       
       // Accumulate output for token/cost parsing
       // Remove ANSI escape codes to make parsing more robust
-      const cleanData = data.replace(/\x1B\[[0-9;]*[a-zA-Z]/g, '');
+      const cleanData = data.replace(new RegExp(String.fromCharCode(27) + '\\[[0-9;]*[a-zA-Z]', 'g'), '')
       accumulatedOutput += cleanData;
       if (accumulatedOutput.length > 5000) accumulatedOutput = accumulatedOutput.slice(-5000);
       
@@ -510,7 +257,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
       }
       
       if (tokenMatch) {
-        let t = tokenMatch[1].toLowerCase().replace(/,/g, '');
+        const t = tokenMatch[1].toLowerCase().replace(/,/g, '');
         if (t.endsWith('m')) newTokens = parseFloat(t) * 1000000;
         else if (t.endsWith('k')) newTokens = parseFloat(t) * 1000;
         else newTokens = parseFloat(t);
@@ -553,13 +300,11 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
       if (idleTimeout) clearTimeout(idleTimeout);
       idleTimeout = setTimeout(checkIdleState, 2000);
 
-      if (parseTimeout) clearTimeout(parseTimeout)
-      parseTimeout = setTimeout(parseTerminalScreen, 150)
     }
     ipcRenderer.on(`pty:data:${id}`, handleData)
 
     term.onData((data) => {
-      if (isActive) {
+      if (isActiveRef.current) {
         ipcRenderer.send('pty:write', id, data)
       }
     })
@@ -589,7 +334,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
       window.removeEventListener(`terminal:write:${id}`, handleWriteDirect)
       term.dispose()
     }
-  }, [id]) // Initialize once per ID
+  }, [id, flushCaptureBuffer]) // Initialize once per ID
 
   // Handle activation changes
   useEffect(() => {
@@ -603,7 +348,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
         }
       })
     }
-  }, [isActive, isReady])
+  }, [id, isActive, isReady])
 
   // Handle theme changes
   useEffect(() => {
@@ -632,7 +377,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
         }
       })
     }
-  }, [fontSize, isReady])
+  }, [fontSize, id, isReady])
 
   return (
     <div 

@@ -29,11 +29,11 @@ function matchesPattern(url: string, pattern: string): boolean {
   try {
     // Simple wildcard matching: *://*.host.com/path/*
     // Supports: * for any chars, ? for single char
-    const parts = pattern.match(/^(\*|https?|wss?):\/\/(\*|\*\.)?([^\/]+)(\/.*)?$/i);
+    const parts = pattern.match(/^(\*|https?|wss?):\/\/(\*|\*\.)?([^/]+)(\/.*)?$/i);
     if (!parts) return url.includes(pattern.replace(/\*/g, ''));
 
     const [, scheme, wildcardSub, host, path] = parts;
-    const urlParts = url.match(/^(https?|wss?):\/\/([^\/]+)(\/.*)?$/i);
+    const urlParts = url.match(/^(https?|wss?):\/\/([^/]+)(\/.*)?$/i);
     if (!urlParts) return false;
 
     const [, urlScheme, urlHost, urlPath] = urlParts;
@@ -99,7 +99,7 @@ export function BrowserPanel() {
   }, []);
 
   useEffect(() => {
-    loadPlugins();
+    void Promise.resolve().then(() => loadPlugins());
   }, [loadPlugins]);
 
   // ── Plugin CRUD ──────────────────────────────────────────────────

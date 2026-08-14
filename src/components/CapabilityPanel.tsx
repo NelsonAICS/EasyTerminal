@@ -37,7 +37,7 @@ export function CapabilityPanel() {
     setCapabilities(data || []);
   }, [searchQuery, activeKinds]);
 
-  useEffect(() => { loadCapabilities(); }, [loadCapabilities]);
+  useEffect(() => { void Promise.resolve().then(() => loadCapabilities()); }, [loadCapabilities]);
 
   const selected = capabilities.find(c => c.id === selectedId) || null;
 

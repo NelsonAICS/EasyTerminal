@@ -11,7 +11,7 @@ import { join, dirname, basename, extname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as os from 'node:os'
 import * as pty from 'node-pty'
-import { exec, execSync } from 'child_process'
+import { exec, execSync, execFileSync } from 'child_process'
 import * as fs from 'node:fs'
 import { contextManager } from './context-manager'
 import Store from 'electron-store'
@@ -29,6 +29,13 @@ import { getIslandManager } from './services/island-manager'
 import * as unifiedSearch from './services/unified-search'
 import type { CapabilityKind } from '../src/types/capability'
 import type { UIIntent } from '../src/types/ui-intent'
+import type { PendingInteraction } from '../src/types/agent-interaction'
+import { createInstanceId, createTerminalSessionRegistry } from './agent-integration/terminal-session-registry'
+import { buildAgentEnvironment, getTmuxSessionName } from './agent-integration/pty-environment'
+import { createSessionStore } from './agent-integration/session-store'
+import { createHookServer, type HookServer } from './agent-integration/hook-server'
+import { createInteractionCoordinator, type InteractionCoordinator } from './agent-integration/interaction-coordinator'
+import { createDefaultAdapters } from './agent-integration/adapters'
 import {
   resolveAnthropicMessagesEndpoint,
   resolveGeminiGenerateContentEndpoint,
@@ -930,6 +937,64 @@ const terminals: Record<string, pty.IPty> = {}
 const sessionLoggers: Record<string, any> = {}
 const currentCwd = process.env.HOME || process.cwd()
 let currentUIIntent: UIIntent | null = null
+const appInstanceId = createInstanceId()
+const terminalSessionRegistry = createTerminalSessionRegistry()
+const agentSessionStore = createSessionStore()
+let agentHookServer: HookServer | null = null
+let interactionCoordinator: InteractionCoordinator | null = null
+
+function publishIslandInteraction(interaction: PendingInteraction) {
+  if (!islandWin || islandWin.isDestroyed()) return
+  const terminalSessionName = terminalSessionRegistry.get(interaction.terminalSessionId)?.label ?? interaction.terminalSessionId
+  islandWin.showInactive()
+  islandWin.webContents.send('island:interaction', { ...interaction, terminalSessionName })
+}
+
+function publishIslandInteractionState(interaction: PendingInteraction) {
+  if (!islandWin || islandWin.isDestroyed()) return
+  const terminalSessionName = terminalSessionRegistry.get(interaction.terminalSessionId)?.label ?? interaction.terminalSessionId
+  islandWin.webContents.send('island:interaction-state', { ...interaction, terminalSessionName })
+}
+
+function getAgentHookSocketPath() {
+  return process.platform === 'win32'
+    ? `\\\\.\\pipe\\easy-terminal-${appInstanceId}`
+    : join(app.getPath('temp'), `easy-terminal-${appInstanceId}.sock`)
+}
+
+function initializeAgentIntegration() {
+  const adapters = createDefaultAdapters()
+  interactionCoordinator = createInteractionCoordinator({
+    store: agentSessionStore,
+    registry: terminalSessionRegistry,
+    adapters,
+    transport: {
+      sendHook: async (payload, interaction) => {
+        if (!agentHookServer) throw new Error('hook_server_unavailable')
+        await agentHookServer.sendResponse(payload, interaction)
+      },
+      writePty: async (terminalSessionId, payload, interaction) => {
+        const session = terminalSessionRegistry.get(terminalSessionId)
+        if (!session?.alive || !session.pty) throw new Error('session_closed')
+        session.pty.write(`${JSON.stringify(payload)}\r`)
+        console.warn(`[AgentIntegration] PTY compatibility response for ${interaction.interactionId}`)
+      },
+    },
+    onStateChange: publishIslandInteractionState,
+  })
+  agentHookServer = createHookServer({
+    socketPath: getAgentHookSocketPath(),
+    registry: terminalSessionRegistry,
+    store: agentSessionStore,
+    adapters,
+    onInteraction: interactionId => {
+      const interaction = agentSessionStore.getInteraction(interactionId)
+      if (interaction) publishIslandInteraction(interaction)
+    },
+    onAck: event => interactionCoordinator?.handleAck(event) ?? { ok: false, code: 'coordinator_unavailable', message: '响应协调器未初始化' },
+  })
+  void agentHookServer.start().catch(error => console.error('[AgentIntegration] Failed to start Hook Server:', error))
+}
 
 function broadcastUIIntent(intent: UIIntent | null) {
   currentUIIntent = intent
@@ -1031,6 +1096,12 @@ function createWindow() {
         islandWin.destroy()
         islandWin = null;
       }
+
+      for (const id of Object.keys(terminals)) {
+        terminalSessionRegistry.invalidate(id)
+        agentSessionStore.cancelForTerminalSession(id)
+      }
+      void agentHookServer?.stop()
       
       // Set quitting flag and trigger actual app quit
       isQuitting = true;
@@ -1069,6 +1140,7 @@ function createWindow() {
   
   islandWin.setAlwaysOnTop(true, 'screen-saver')
   islandWin.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+  islandWin.setFocusable(false)
 
   // Enable click-through for transparent areas (macOS supports this well)
   islandWin.setIgnoreMouseEvents(true, { forward: true })
@@ -1289,7 +1361,7 @@ ipcMain.handle('workflow:execute', async (_e, id: string, variables?: Record<str
         });
       }
     },
-    onNodeComplete: (node, result) => {
+    onNodeComplete: (node) => {
       if (win && !win.isDestroyed()) {
         win.webContents.send('workflow:status', {
           type: 'node_complete',
@@ -1318,7 +1390,15 @@ ipcMain.handle('capability:invoke', async (_e, id: string, input?: Record<string
 });
 
 // ── ReAct Engine (direct agent invocation) ────────────────────────
-let _agentRuntime: { run: Function } | null = null;
+type AgentRuntimeRunner = {
+  run: (
+    query: string,
+    toolNames?: string[],
+    options?: { providerId?: string; model?: string; sessionId?: string; taskId?: string },
+  ) => Promise<unknown>
+}
+
+let _agentRuntime: AgentRuntimeRunner | null = null;
 
 const getAgentRuntime = async () => {
   if (!_agentRuntime) {
@@ -1443,6 +1523,7 @@ app.whenReady().then(() => {
     return p
   })
 
+  initializeAgentIntegration()
   createWindow()
 
   // 注册全局快捷键 (Scheme A)
@@ -1612,6 +1693,8 @@ app.whenReady().then(() => {
 
   // Set up PTY IPC
   ipcMain.on('pty:kill', (_event, id) => {
+    terminalSessionRegistry.invalidate(id)
+    agentSessionStore.cancelForTerminalSession(id)
     if (terminals[id]) {
       if (sessionLoggers[id]) {
         sessionLoggers[id].end()
@@ -1626,16 +1709,42 @@ app.whenReady().then(() => {
     }
   })
 
+  ipcMain.on('pty:rename', (_event, id: string, label: string) => {
+    terminalSessionRegistry.updateLabel(id, label)
+  })
+
   ipcMain.on('pty:create', (event, id) => {
     if (terminals[id]) return
 
     let command = shell
     let args: string[] = []
-    
+    const tmuxSessionName = hasTmux ? getTmuxSessionName(id) : undefined
+    const registration = terminalSessionRegistry.register({
+      terminalSessionId: id,
+      instanceId: appInstanceId,
+      label: id,
+      ...(tmuxSessionName ? { tmuxSessionName } : {}),
+    })
+
     if (hasTmux) {
       // Use tmux to create or attach to a session
       command = 'tmux'
-      args = ['new-session', '-A', '-s', `easy_term_${id}`]
+      args = ['new-session', '-A', '-s', tmuxSessionName as string]
+      // tmux servers can outlive a tab. Refresh the session-scoped identity
+      // before attaching so an old token cannot remain trusted.
+      for (const [key, value] of Object.entries({
+        EASYTERMINAL_TERMINAL_SESSION_ID: registration.terminalSessionId,
+        EASYTERMINAL_CHANNEL_TOKEN: registration.channelToken,
+        EASYTERMINAL_HOOK_SOCKET: getAgentHookSocketPath(),
+        EASYTERMINAL_INSTANCE_ID: registration.instanceId,
+      })) {
+        try {
+          execFileSync('tmux', ['set-environment', '-t', tmuxSessionName, key, value], { stdio: 'ignore' })
+        } catch {
+          // A new tmux session receives the PTY environment below. Existing
+          // sessions are updated best-effort before attachment.
+        }
+      }
     } else if (os.platform() !== 'win32') {
       // Launch as login shell so aliases and profiles (.zshrc) are loaded
       args = ['-l']
@@ -1646,8 +1755,9 @@ app.whenReady().then(() => {
       cols: 80,
       rows: 30,
       cwd: currentCwd,
-      env: process.env as Record<string, string>
+      env: buildAgentEnvironment(process.env, registration, getAgentHookSocketPath())
     })
+    terminalSessionRegistry.attachPty(id, ptyProcess)
 
     // Create non-blocking logger for this session
     sessionLoggers[id] = contextManager.createSessionLogger(id, id);
@@ -1661,6 +1771,13 @@ app.whenReady().then(() => {
       if (sessionLoggers[id]) {
         sessionLoggers[id].write(data);
       }
+    })
+
+    ptyProcess.onExit(() => {
+      terminalSessionRegistry.markPtyExit(id)
+      agentSessionStore.cancelForTerminalSession(id)
+      delete terminals[id]
+      delete sessionLoggers[id]
     })
 
     terminals[id] = ptyProcess
@@ -2421,26 +2538,48 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
     }
   })
 
-  ipcMain.on('island:action', async (_event, action: string | string[], sessionId?: string) => {
-    if (islandWin) {
-      if (sessionId && terminals[sessionId]) {
-        if (Array.isArray(action)) {
-          for (const stroke of action) {
-            terminals[sessionId].write(stroke)
-            // Small delay to ensure TUI processes arrow keys before Enter
-            await new Promise(resolve => setTimeout(resolve, 30))
-          }
-        } else if (action === 'approve') {
-          terminals[sessionId].write('y\r')
-        } else if (action === 'deny') {
-          terminals[sessionId].write('n\r')
-        } else {
-          terminals[sessionId].write(action)
-        }
-      } else if (win && !win.isDestroyed()) {
-        win.webContents.send(`pty:data:default_tab`, `\r\n[Agent] User clicked ${action}\r\n`)
-      }
+  ipcMain.handle('island:interaction-response', async (event, response) => {
+    if (!islandWin || event.sender !== islandWin.webContents) {
+      return { ok: false, code: 'forbidden', message: '只有灵动岛窗口可以提交交互响应' }
     }
+    if (!interactionCoordinator) return { ok: false, code: 'coordinator_unavailable', message: '响应协调器未初始化' }
+    return interactionCoordinator.submit(response)
+  })
+
+  ipcMain.handle('island:set-interactive', (event, request: { interactionId: string; interactive: boolean; reason: 'composer-focus' | 'composer-blur' | 'action-complete' }) => {
+    if (!islandWin || event.sender !== islandWin.webContents) return { ok: false, code: 'forbidden' }
+    if (!request?.interactionId || typeof request.interactive !== 'boolean') return { ok: false, code: 'invalid_request' }
+    if (request.interactive) {
+      islandWin.setIgnoreMouseEvents(false)
+      islandWin.setFocusable(true)
+      islandWin.show()
+      islandWin.focus()
+      return { ok: true, focused: true }
+    }
+    islandWin.setFocusable(false)
+    islandWin.setIgnoreMouseEvents(true, { forward: true })
+    return { ok: true, focused: false }
+  })
+
+  ipcMain.handle('island:jump-to-terminal', (event, terminalSessionId: string) => {
+    if (!islandWin || event.sender !== islandWin.webContents) return { ok: false, code: 'forbidden' }
+    const registration = terminalSessionRegistry.get(terminalSessionId)
+    if (!registration || !registration.alive) return { ok: false, code: 'session_closed' }
+    if (win && !win.isDestroyed()) {
+      win.show()
+      win.focus()
+      win.webContents.send('terminal:focus-session', terminalSessionId)
+    }
+    islandWin.setFocusable(false)
+    islandWin.setIgnoreMouseEvents(true, { forward: true })
+    return { ok: true }
+  })
+
+  // Legacy renderer messages are intentionally ignored. Approvals must travel
+  // through InteractionCoordinator and receive an ACK; no y/n or arrow-count
+  // inference is safe enough to keep as an implicit fallback.
+  ipcMain.on('island:action', () => {
+    console.warn('[AgentIntegration] Ignored legacy island:action without a structured interaction')
   })
 
   ipcMain.on('island:set-ignore-mouse-events', (_event, ignore: boolean) => {

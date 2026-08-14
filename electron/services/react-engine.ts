@@ -2,7 +2,7 @@
 // Based on the ReAct paradigm: the LLM thinks, decides which tool to call,
 // observes the result, and loops until the task is complete.
 
-import { chatCompletion, type LLMConfig, type LLMMessage, type LLMTool, type LLMToolCall } from './llm-gateway';
+import { chatCompletion, type LLMConfig, type LLMMessage, type LLMTool } from './llm-gateway';
 
 export interface ReActTool extends LLMTool {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -58,7 +58,7 @@ export async function runReActLoop(
 ): Promise<ReActResult> {
   const messages: LLMMessage[] = [];
   const steps: ReActStep[] = [];
-  let totalUsage = { input_tokens: 0, output_tokens: 0 };
+  const totalUsage = { input_tokens: 0, output_tokens: 0 };
 
   // Build system prompt with available tools description
   let systemPrompt = REACT_SYSTEM_PROMPT;

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { X, Cloud, MessageSquare, Link, Mail, Puzzle } from 'lucide-react';
 import { type ExternalServiceConfig, type ExternalServiceType, EXTERNAL_SERVICE_TYPES } from '../types/app-settings';
 
@@ -17,21 +17,15 @@ const ICON_MAP: Record<string, React.ReactNode> = {
 };
 
 export function AddServiceDialog({ isOpen, onClose, onAdd }: Props) {
+  if (!isOpen) return null;
+  return <AddServiceDialogContent onClose={onClose} onAdd={onAdd} />;
+}
+
+function AddServiceDialogContent({ onClose, onAdd }: Pick<Props, 'onClose' | 'onAdd'>) {
   const [step, setStep] = useState<'type' | 'fields'>('type');
   const [selectedType, setSelectedType] = useState<ExternalServiceType | null>(null);
   const [name, setName] = useState('');
   const [fields, setFields] = useState<Record<string, string>>({});
-
-  useEffect(() => {
-    if (isOpen) {
-      setStep('type');
-      setSelectedType(null);
-      setName('');
-      setFields({});
-    }
-  }, [isOpen]);
-
-  if (!isOpen) return null;
 
   const typeMeta = EXTERNAL_SERVICE_TYPES.find(t => t.id === selectedType);
 
