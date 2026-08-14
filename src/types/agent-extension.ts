@@ -98,6 +98,59 @@ export interface FileEntry {
   extension?: string;
 }
 
+export type FileTreeNodeKind = 'directory' | 'file' | 'symlink';
+
+export interface FileTreeEntry {
+  name: string;
+  path: string;
+  kind: FileTreeNodeKind;
+  size?: number;
+  mtime?: string;
+  extension?: string;
+}
+
+export type FileTreeLoadState = 'idle' | 'loading' | 'loaded' | 'error';
+
+export interface FileTreeDirectoryState {
+  path: string;
+  entries: FileTreeEntry[];
+  loadState: FileTreeLoadState;
+  requestId?: string;
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+export interface FileTreeState {
+  rootPath: string;
+  directories: Record<string, FileTreeDirectoryState>;
+  expandedPaths: string[];
+}
+
+export interface ListDirectoryRequest {
+  path: string;
+  includeHidden?: boolean;
+  requestId: string;
+}
+
+export type ListDirectoryResult =
+  | {
+      ok: true;
+      requestId: string;
+      path: string;
+      entries: FileTreeEntry[];
+    }
+  | {
+      ok: false;
+      requestId: string;
+      path: string;
+      error: {
+        code: string;
+        message: string;
+      };
+    };
+
 export interface ContextArtifact {
   id: string;
   type: 'session' | 'snippet' | 'project';

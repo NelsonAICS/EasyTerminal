@@ -90,28 +90,21 @@ window.addEventListener('click', (e) => {
   }
 }, true);
 
+// Text selection is sent to the host through the webview bridge. The guest
+// page cannot query the host <webview> element, so ipcRenderer.sendToHost is
+// the only supported direction for this message.
+window.addEventListener('mouseup', () => {
+  if (isPickerMode) return;
+  const selection = window.getSelection();
+  const text = selection ? selection.toString().trim() : '';
+  if (text && text.length <= 5000) {
+    ipcRenderer.sendToHost('browser-selection', { text, url: window.location.href });
+  }
+}, true);
+
 // Add basic context menu prevention when in picker mode
 window.addEventListener('contextmenu', (e) => {
   if (isPickerMode) {
     e.preventDefault();
   }
 }, true);
-
-// ── Plugin Script Injection ──────────────────────────────────────
-// Listen for plugin scripts from the host (BrowserPanel.tsx)
-ipcRenderer.on('inject-plugins', (event, scripts) => {
-  if (!scripts || !Array.isArray(scripts)) return;
-  try {
-    scripts.forEach(script => {
-      if (script && typeof script === 'string' && script.trim()) {
-        try {
-          eval(script);
-        } catch (err) {
-          console.error('[EasyTerminal Plugin] Script error:', err.message);
-        }
-      }
-    });
-  } catch (err) {
-    console.error('[EasyTerminal Plugin] Injection error:', err);
-  }
-});

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ClipboardPlus,
   Database,
@@ -50,6 +50,37 @@ interface AnalysisState {
   body: string;
   meta: string[];
 }
+
+type VaultAction = 'save' | 'analyze' | 'compact' | 'import' | 'export' | 'refresh';
+
+interface VaultActionState {
+  phase: 'idle' | 'loading' | 'success' | 'error';
+  message?: string;
+}
+
+type ImportPreview = {
+  filePath: string;
+  counts: Record<string, number>;
+  payload: Record<string, unknown>;
+};
+
+const INITIAL_ACTION_STATES: Record<VaultAction, VaultActionState> = {
+  save: { phase: 'idle' },
+  analyze: { phase: 'idle' },
+  compact: { phase: 'idle' },
+  import: { phase: 'idle' },
+  export: { phase: 'idle' },
+  refresh: { phase: 'idle' },
+};
+
+const ACTION_LABELS: Record<VaultAction, string> = {
+  save: '保存',
+  analyze: '分析',
+  compact: '压缩',
+  import: '导入',
+  export: '导出',
+  refresh: '刷新',
+};
 
 const VIEW_LABELS: Record<VaultView, string> = {
   assets: '资产文件',
@@ -192,8 +223,24 @@ export function ContextVaultPanel({
   const [analysisQuery, setAnalysisQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisState | null>(null);
-  const [statusMessage, setStatusMessage] = useState('');
-  const [isBusy, setIsBusy] = useState(false);
+  const [actionStates, setActionStates] = useState<Record<VaultAction, VaultActionState>>(INITIAL_ACTION_STATES);
+  const [importPreview, setImportPreview] = useState<ImportPreview | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const lastFocusedElementRef = useRef<HTMLElement | null>(null);
+  const resultListRef = useRef<HTMLDivElement | null>(null);
+  const resultButtonRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  const setActionState = (action: VaultAction, next: VaultActionState) => {
+    setActionStates(previous => ({ ...previous, [action]: next }));
+  };
+
+  const actionIsBusy = (action: VaultAction) => actionStates[action].phase === 'loading';
+
+  const actionMessageClass = (phase: VaultActionState['phase']) => {
+    if (phase === 'error') return 'border-red-400/25 bg-red-500/10 text-red-700 dark:text-red-200';
+    if (phase === 'success') return 'border-emerald-400/25 bg-emerald-500/10 text-emerald-800 dark:text-emerald-200';
+    return 'border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)]';
+  };
 
   const loadOverview = async () => {
     if (!ipcRenderer) return;
@@ -210,7 +257,9 @@ export function ContextVaultPanel({
   };
 
   useEffect(() => {
-    void loadOverview();
+    void loadOverview().catch(error => {
+      setActionState('refresh', { phase: 'error', message: error instanceof Error ? error.message : '读取上下文数据失败。' });
+    });
   }, []);
 
   const items = useMemo(() => {
@@ -271,92 +320,138 @@ export function ContextVaultPanel({
   const selectedItem = items.find(item => item.id === selectedId) || null;
   const assetCount = overview ? overview.sessions.length + overview.snippets.length + overview.projects.length : 0;
 
+  useEffect(() => {
+    if (!selectedItem && !analysis) {
+      setDetailOpen(false);
+      return;
+    }
+    setDetailOpen(true);
+  }, [selectedItem, analysis]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && detailOpen) {
+        event.preventDefault();
+        setDetailOpen(false);
+        setSelectedId(null);
+        setAnalysis(null);
+        lastFocusedElementRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [detailOpen]);
+
   const saveSnippet = async () => {
     if (!ipcRenderer || !manualSnippet.trim()) return;
-    setIsBusy(true);
-    setStatusMessage('');
+    setActionState('save', { phase: 'loading', message: '正在保存…' });
     try {
-      await ipcRenderer.invoke('context:save-snippet', manualSnippet.trim(), 'ManualNote');
+      const result = await ipcRenderer.invoke('context:save-snippet', manualSnippet.trim(), 'ManualNote');
+      if (!result) throw new Error('保存接口未返回成功结果。');
       setManualSnippet('');
-      setStatusMessage('已保存新的上下文片段。');
       await loadOverview();
-    } finally {
-      setIsBusy(false);
+      setActionState('save', { phase: 'success', message: '已保存新的上下文片段。' });
+    } catch (error) {
+      setActionState('save', { phase: 'error', message: error instanceof Error ? error.message : '保存失败，原输入已保留。' });
     }
   };
 
   const exportContext = async () => {
     if (!ipcRenderer) return;
-    setIsBusy(true);
-    setStatusMessage('');
+    setActionState('export', { phase: 'loading', message: '正在导出…' });
     try {
-      const result = await ipcRenderer.invoke('context:export-json');
+      const result = await ipcRenderer.invoke('context:export-json') as { success?: boolean; canceled?: boolean; filePath?: string; error?: string };
       if (result?.success) {
-        setStatusMessage(`已导出 JSON：${result.filePath}`);
+        setActionState('export', { phase: 'success', message: `已导出 JSON：${result.filePath || '文件'}` });
       } else if (!result?.canceled) {
-        setStatusMessage('导出失败，请稍后再试。');
+        throw new Error(result?.error || '导出失败，请稍后再试。');
+      } else {
+        setActionState('export', { phase: 'idle' });
       }
-    } finally {
-      setIsBusy(false);
+    } catch (error) {
+      setActionState('export', { phase: 'error', message: error instanceof Error ? error.message : '导出失败。' });
     }
   };
 
   const importContext = async () => {
     if (!ipcRenderer) return;
-    setIsBusy(true);
-    setStatusMessage('');
+    setActionState('import', { phase: 'loading', message: '正在校验导入文件…' });
     try {
-      const result = await ipcRenderer.invoke('context:import-json');
+      const result = await ipcRenderer.invoke('context:import-preview') as { success?: boolean; canceled?: boolean; filePath?: string; counts?: Record<string, number>; payload?: Record<string, unknown>; error?: string };
       if (result?.success) {
-        const counts = result.counts || {};
-        setStatusMessage(`已导入：记录 ${counts.records || 0} 条，快照 ${counts.snapshots || 0} 条，事件 ${counts.events || 0} 条，片段 ${counts.snippets || 0} 条。`);
-        await loadOverview();
+        setImportPreview({ filePath: result.filePath || '', counts: result.counts || {}, payload: result.payload || {} });
+        setActionState('import', { phase: 'success', message: '文件已通过校验，请确认导入范围。' });
       } else if (!result?.canceled) {
-        setStatusMessage('导入失败，请检查 JSON 内容。');
+        throw new Error(result?.error || '导入失败，请检查 JSON 内容。');
+      } else {
+        setActionState('import', { phase: 'idle' });
       }
-    } finally {
-      setIsBusy(false);
+    } catch (error) {
+      setActionState('import', { phase: 'error', message: error instanceof Error ? error.message : '导入失败，原数据保持不变。' });
+    }
+  };
+
+  const confirmImport = async () => {
+    if (!ipcRenderer || !importPreview) return;
+    setActionState('import', { phase: 'loading', message: '正在写入导入数据…' });
+    try {
+      const result = await ipcRenderer.invoke('context:import-confirm', importPreview.payload) as { success?: boolean; counts?: Record<string, number>; error?: string };
+      if (!result?.success) throw new Error(result?.error || '导入失败，原数据保持不变。');
+      const counts = result.counts || importPreview.counts;
+      setImportPreview(null);
+      await loadOverview();
+      setActionState('import', { phase: 'success', message: `已导入：记录 ${counts.records || 0} 条、快照 ${counts.snapshots || 0} 条、事件 ${counts.events || 0} 条、片段 ${counts.snippets || 0} 条。` });
+    } catch (error) {
+      setActionState('import', { phase: 'error', message: error instanceof Error ? error.message : '导入失败，原数据保持不变。' });
     }
   };
 
   const analyzeContextPacket = async () => {
     if (!ipcRenderer) return;
-    setIsBusy(true);
-    setStatusMessage('');
+    setActionState('analyze', { phase: 'loading', message: '正在生成上下文包…' });
     try {
       const packet = await ipcRenderer.invoke('context:build-packet', {
         sessionId: activeSessionId,
         query: analysisQuery.trim() || query.trim() || '当前上下文分析',
       });
       setAnalysis(buildPacketAnalysis(packet as ContextPacket));
-      setStatusMessage('已生成新的上下文包。');
-    } finally {
-      setIsBusy(false);
+      setActionState('analyze', { phase: 'success', message: '已生成新的上下文包。' });
+    } catch (error) {
+      setActionState('analyze', { phase: 'error', message: error instanceof Error ? error.message : '分析失败，原数据保持不变。' });
     }
   };
 
   const compactContext = async () => {
     if (!ipcRenderer) return;
-    setIsBusy(true);
-    setStatusMessage('');
+    setActionState('compact', { phase: 'loading', message: '正在压缩上下文…' });
     try {
       const result = await ipcRenderer.invoke('context:compact', {
         sessionId: activeSessionId,
         query: analysisQuery.trim() || query.trim() || '当前上下文压缩',
       });
       setAnalysis(buildCompactAnalysis(result as { snapshot: ContextSnapshot; driftCheck?: DriftCheckResult }));
-      setStatusMessage('已生成新的压缩快照。');
       await loadOverview();
       setView('snapshots');
-    } finally {
-      setIsBusy(false);
+      setActionState('compact', { phase: 'success', message: '已生成新的压缩快照。' });
+    } catch (error) {
+      setActionState('compact', { phase: 'error', message: error instanceof Error ? error.message : '压缩失败，原数据保持不变。' });
+    }
+  };
+
+  const refreshOverview = async () => {
+    setActionState('refresh', { phase: 'loading', message: '正在刷新数据…' });
+    try {
+      await loadOverview();
+      setActionState('refresh', { phase: 'success', message: '数据已刷新。' });
+    } catch (error) {
+      setActionState('refresh', { phase: 'error', message: error instanceof Error ? error.message : '刷新失败，原数据保持不变。' });
     }
   };
 
   return (
-    <div className="flex h-full min-w-0 overflow-hidden">
-      <aside className="w-[19rem] shrink-0 border-r border-[var(--panel-border)] bg-[var(--surface-muted)]/55 p-4">
-        <div className="flex h-full flex-col gap-4">
+    <div className="context-vault-panel relative flex h-full min-h-0 min-w-0 overflow-hidden">
+      <aside className="flex min-h-0 w-[19rem] shrink-0 flex-col border-r border-[var(--panel-border)] bg-[var(--surface-muted)]/55 p-4">
+        <div className="flex min-h-0 h-full flex-col gap-4">
           <div className="relative">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
             <UIInput
@@ -383,7 +478,9 @@ export function ContextVaultPanel({
               </UIButton>
             ))}
           </div>
-          <p className="text-[11px] text-white/35">{VIEW_DESCRIPTIONS[view]}</p>
+          <p className="shrink-0 text-[11px] text-[var(--text-secondary)]">{VIEW_DESCRIPTIONS[view]}</p>
+
+          <div className="scroll-panel min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
 
           <UIPanel className="space-y-3 p-4">
             <div className="flex items-center gap-2 text-sm font-medium text-white">
@@ -398,11 +495,11 @@ export function ContextVaultPanel({
               onKeyDown={event => {
                 if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
                   event.preventDefault()
-                  if (manualSnippet.trim() && !isBusy) void saveSnippet()
+                  if (manualSnippet.trim() && !actionIsBusy('save')) void saveSnippet()
                 }
               }}
             />
-            <UIButton onClick={() => void saveSnippet()} tone="primary" disabled={!manualSnippet.trim() || isBusy} className="w-full bg-blue-600 text-white hover:bg-blue-500 text-xs py-1.5">
+            <UIButton onClick={() => void saveSnippet()} tone="primary" disabled={!manualSnippet.trim() || actionIsBusy('save')} className="w-full bg-blue-600 text-white hover:bg-blue-500 text-xs py-1.5">
               保存片段 <kbd className="ml-1.5 rounded bg-black/25 px-1.5 py-0.5 font-mono text-[10px] normal-case">Ctrl+↵</kbd>
             </UIButton>
           </UIPanel>
@@ -418,10 +515,10 @@ export function ContextVaultPanel({
               placeholder="可选：填写当前分析目标"
             />
             <div className="grid gap-2">
-              <UIButton onClick={() => void analyzeContextPacket()} tone="neutral" disabled={isBusy}>
+              <UIButton onClick={() => void analyzeContextPacket()} tone="neutral" disabled={actionIsBusy('analyze')}>
                 生成上下文包
               </UIButton>
-              <UIButton onClick={() => void compactContext()} tone="neutral" disabled={isBusy}>
+              <UIButton onClick={() => void compactContext()} tone="neutral" disabled={actionIsBusy('compact')}>
                 压缩为快照
               </UIButton>
             </div>
@@ -433,32 +530,33 @@ export function ContextVaultPanel({
               <span>导入与导出</span>
             </div>
             <div className="grid gap-2">
-              <UIButton onClick={() => void importContext()} tone="ghost" disabled={isBusy}>
+              <UIButton onClick={() => void importContext()} tone="ghost" disabled={actionIsBusy('import')}>
                 <Upload size={14} />
                 导入 JSON
               </UIButton>
-              <UIButton onClick={() => void exportContext()} tone="ghost" disabled={isBusy}>
+              <UIButton onClick={() => void exportContext()} tone="ghost" disabled={actionIsBusy('export')}>
                 <Download size={14} />
                 导出 JSON
               </UIButton>
-              <UIButton onClick={() => void loadOverview()} tone="ghost" disabled={isBusy}>
-                <RefreshCw size={14} className={isBusy ? 'animate-spin' : ''} />
+              <UIButton onClick={() => void refreshOverview()} tone="ghost" disabled={actionIsBusy('refresh')}>
+                <RefreshCw size={14} className={actionIsBusy('refresh') ? 'animate-spin' : ''} />
                 刷新数据
               </UIButton>
             </div>
           </UIPanel>
 
-          {statusMessage && (
-            <div className="rounded-2xl border border-blue-400/12 bg-blue-500/10 px-3 py-3 text-xs leading-5 text-blue-100">
-              {statusMessage}
-            </div>
-          )}
+            {Object.entries(actionStates).filter(([, state]) => state.message).map(([key, state]) => (
+              <div key={key} className={`rounded-2xl border px-3 py-3 text-xs leading-5 ${actionMessageClass(state.phase)}`}>
+                <span className="font-medium">{ACTION_LABELS[key as VaultAction]}：</span>{state.message}
+              </div>
+            ))}
+          </div>
         </div>
       </aside>
 
-      <div className="min-w-0 flex-1 grid grid-cols-[minmax(0,1fr)_23rem]">
-        <section className="min-w-0 border-r border-[var(--panel-border)]">
-          <div className="flex items-center justify-between border-b border-[var(--panel-border)] px-5 py-4">
+      <div className="flex min-h-0 min-w-0 flex-1">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-[var(--panel-border)]">
+          <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[var(--panel-border)] px-5 py-4">
             <div>
               <UISectionKicker>{VIEW_LABELS[view]}</UISectionKicker>
               <div className="mt-1 text-sm text-white/72">共 {items.length} 条结果</div>
@@ -471,11 +569,32 @@ export function ContextVaultPanel({
             </div>
           </div>
 
-          <div className="min-h-0 overflow-y-auto">
+          <div
+            ref={resultListRef}
+            className="scroll-panel min-h-0 flex-1 overflow-y-auto"
+            onKeyDown={event => {
+              if (!items.length || (event.key !== 'ArrowDown' && event.key !== 'ArrowUp')) return;
+              event.preventDefault();
+              const currentIndex = selectedId ? items.findIndex(item => item.id === selectedId) : -1;
+              const nextIndex = event.key === 'ArrowDown'
+                ? Math.min(items.length - 1, currentIndex + 1)
+                : Math.max(0, currentIndex === -1 ? items.length - 1 : currentIndex - 1);
+              const next = items[nextIndex];
+              if (!next) return;
+              setSelectedId(next.id);
+              setDetailOpen(true);
+              resultButtonRefs.current[next.id]?.focus();
+            }}
+          >
             {items.map(item => (
               <button
                 key={item.id}
-                onClick={() => setSelectedId(prev => prev === item.id ? null : item.id)}
+                ref={element => { resultButtonRefs.current[item.id] = element; }}
+                onClick={() => {
+                  lastFocusedElementRef.current = document.activeElement as HTMLElement | null;
+                  setSelectedId(prev => prev === item.id ? null : item.id);
+                  setDetailOpen(true);
+                }}
                 className={`grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-4 border-b border-[var(--panel-border)] px-5 py-4 text-left transition-colors ${
                   selectedId === item.id ? 'bg-white/[0.07]' : 'hover:bg-white/[0.04]'
                 }`}
@@ -561,7 +680,8 @@ export function ContextVaultPanel({
           </div>
         </section>
 
-        <aside className="min-h-0 overflow-y-auto bg-[var(--surface-muted)]/35 p-4">
+        {detailOpen && (
+        <aside className="absolute inset-y-0 right-0 z-20 flex min-h-0 w-[min(23rem,calc(100%-1rem))] flex-col overflow-y-auto border-l border-[var(--panel-border)] bg-[var(--panel-bg)] p-4 shadow-2xl xl:relative xl:inset-auto xl:z-auto xl:w-[22rem] xl:shrink-0 xl:bg-[var(--surface-muted)]/35 xl:shadow-none">
           {analysis && (
             <UIPanel className="mb-4 p-4">
               <div className="flex items-start justify-between gap-3">
@@ -569,7 +689,7 @@ export function ContextVaultPanel({
                   <UISectionKicker>{analysis.mode === 'packet' ? '上下文分析' : '压缩结果'}</UISectionKicker>
                   <h3 className="mt-2 text-lg font-semibold text-white">{analysis.title}</h3>
                 </div>
-                <UIButton tone="ghost" size="icon" onClick={() => setAnalysis(null)}>
+                <UIButton tone="ghost" size="icon" onClick={() => { setAnalysis(null); if (!selectedItem) setDetailOpen(false); }}>
                   <X size={14} />
                 </UIButton>
               </div>
@@ -607,7 +727,7 @@ export function ContextVaultPanel({
                 <h3 className="mt-2 text-lg font-semibold text-white">详情面板</h3>
               </div>
               {selectedItem && (
-                <UIButton tone="ghost" size="icon" onClick={() => setSelectedId(null)}>
+                <UIButton tone="ghost" size="icon" onClick={() => { setSelectedId(null); setDetailOpen(Boolean(analysis)); lastFocusedElementRef.current?.focus(); }}>
                   <X size={14} />
                 </UIButton>
               )}
@@ -716,7 +836,35 @@ export function ContextVaultPanel({
             )}
           </UIPanel>
         </aside>
+        )}
       </div>
+
+      {importPreview && (
+        <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl border border-[var(--panel-border)] bg-[var(--panel-bg)] p-5 shadow-2xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <UISectionKicker>导入预览</UISectionKicker>
+                <h3 className="mt-2 text-lg font-semibold text-[var(--text-primary)]">确认写入上下文数据</h3>
+              </div>
+              <UIButton tone="ghost" size="icon" onClick={() => { setImportPreview(null); setActionState('import', { phase: 'idle' }); }}><X size={14} /></UIButton>
+            </div>
+            <p className="mt-3 break-all text-xs leading-5 text-[var(--text-secondary)]">{importPreview.filePath}</p>
+            <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+              {Object.entries(importPreview.counts).map(([key, count]) => (
+                <div key={key} className="rounded-xl border border-[var(--panel-border)] bg-[var(--surface-muted)] px-3 py-2 text-[var(--text-secondary)]">
+                  {key}：<span className="font-medium text-[var(--text-primary)]">{count}</span>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-xs leading-5 text-[var(--text-secondary)]">导入会追加到现有数据，不会覆盖当前输入；确认前不会写入数据库。</p>
+            <div className="mt-5 flex justify-end gap-2">
+              <UIButton tone="ghost" onClick={() => { setImportPreview(null); setActionState('import', { phase: 'idle' }); }}>取消</UIButton>
+              <UIButton tone="primary" onClick={() => void confirmImport()} disabled={actionIsBusy('import')}>{actionIsBusy('import') ? '导入中…' : '确认导入'}</UIButton>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -29,13 +29,30 @@ const electron = window.require ? window.require('electron') : null
 
 type SourceSelection = 'all' | AgentMigrationSource['id']
 
+type MigrationScanState = {
+  kind: 'idle' | 'loading' | 'success' | 'empty' | 'partial-error' | 'error'
+  scan: AgentMigrationScan | null
+  message?: string
+}
+
+type MigrationScanResponse = AgentMigrationScan & {
+  errors?: string[]
+  sourceErrors?: Record<string, string>
+}
+
 const SOURCE_ORDER: AgentMigrationSource['id'][] = ['claude', 'codex', 'openclaw']
 
-const copyText = async (value: string) => {
+const copyText = async (value: string): Promise<boolean> => {
   try {
     await navigator.clipboard.writeText(value)
+    return true
   } catch {
-    electron?.clipboard?.writeText(value)
+    try {
+      electron?.clipboard?.writeText(value)
+      return Boolean(electron?.clipboard)
+    } catch {
+      return false
+    }
   }
 }
 
@@ -121,22 +138,36 @@ ${inventory}`
 }
 
 export function AgentMigrationPanel() {
-  const [scan, setScan] = useState<AgentMigrationScan | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [scanState, setScanState] = useState<MigrationScanState>({ kind: 'idle', scan: null })
   const [selectedSourceId, setSelectedSourceId] = useState<SourceSelection>('all')
-  const [copied, setCopied] = useState<'prompt' | 'json' | null>(null)
+  const [copied, setCopied] = useState<'prompt' | 'json' | 'error' | null>(null)
+
+  const scan = scanState.scan
+  const loading = scanState.kind === 'loading'
 
   const loadScan = async () => {
     if (!ipcRenderer) return
-    setLoading(true)
+    setScanState(previous => ({ kind: 'loading', scan: previous.scan }))
     try {
-      const result = await ipcRenderer.invoke('agent:migration-scan')
-      setScan(result || null)
+      const result = await ipcRenderer.invoke('agent:migration-scan') as MigrationScanResponse
+      if (!result || !Array.isArray(result.sources)) throw new Error('扫描结果格式无效。')
+      const errors = [
+        ...(Array.isArray(result.errors) ? result.errors : []),
+        ...Object.values(result.sourceErrors || {}),
+      ].filter(Boolean)
+      const nextScan = result as AgentMigrationScan
+      setScanState({
+        kind: errors.length > 0 ? 'partial-error' : nextScan.sources.some(source => source.detected) ? 'success' : 'empty',
+        scan: nextScan,
+        ...(errors.length > 0 ? { message: errors.join('；') } : {}),
+      })
     } catch (error) {
       console.error('Failed to scan local agent migration data:', error)
-      setScan(null)
-    } finally {
-      setLoading(false)
+      setScanState(previous => ({
+        kind: 'error',
+        scan: previous.scan,
+        message: error instanceof Error ? error.message : '扫描本机 Agent 失败。',
+      }))
     }
   }
 
@@ -171,15 +202,15 @@ export function AgentMigrationPanel() {
   const totalIntegrations = orderedSources.reduce((sum, source) => sum + source.pluginsCount + source.mcpCount, 0)
 
   const handleCopy = async (kind: 'prompt' | 'json', value: string) => {
-    await copyText(value)
-    setCopied(kind)
-    window.setTimeout(() => setCopied(null), 1600)
+    const copiedSuccessfully = await copyText(value)
+    setCopied(copiedSuccessfully ? kind : 'error')
+    window.setTimeout(() => setCopied(null), copiedSuccessfully ? 1600 : 3000)
   }
 
   return (
-    <div className="flex h-full">
-      <div className="w-[18.5rem] shrink-0 border-r border-white/10 bg-black/20">
-        <div className="border-b border-white/10 p-4">
+    <div className="migration-panel flex h-full min-h-0 min-w-0 overflow-hidden">
+      <div className="flex min-h-0 w-[18.5rem] shrink-0 flex-col overflow-hidden border-r border-[var(--panel-border)] bg-[var(--surface-muted)]">
+        <div className="shrink-0 border-b border-[var(--panel-border)] p-4">
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[11px] uppercase tracking-[0.22em] text-white/35">Agent Migration</div>
@@ -207,7 +238,7 @@ export function AgentMigrationPanel() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-3">
+        <div className="scroll-panel min-h-0 flex-1 overflow-y-auto p-3">
           <button
             onClick={() => setSelectedSourceId('all')}
             className={`mb-2 w-full rounded-2xl border px-3 py-3 text-left transition-colors ${
@@ -268,7 +299,7 @@ export function AgentMigrationPanel() {
           </div>
         </div>
 
-        <div className="border-t border-white/10 p-3">
+        <div className="shrink-0 border-t border-[var(--panel-border)] p-3">
           <button
             onClick={loadScan}
             disabled={loading}
@@ -280,8 +311,20 @@ export function AgentMigrationPanel() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="scroll-panel min-h-0 min-w-0 flex-1 overflow-y-auto p-4">
         <div className="space-y-4">
+          {scanState.kind !== 'idle' && (
+            <div role="status" className={`rounded-2xl border px-4 py-3 text-xs leading-5 ${scanState.kind === 'error' ? 'border-red-400/25 bg-red-500/10 text-red-700 dark:text-red-200' : scanState.kind === 'partial-error' ? 'border-amber-400/25 bg-amber-500/10 text-amber-800 dark:text-amber-200' : scanState.kind === 'empty' ? 'border-[var(--panel-border)] bg-[var(--surface-muted)] text-[var(--text-secondary)]' : 'border-blue-400/25 bg-blue-500/10 text-blue-800 dark:text-blue-200'}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  {scanState.kind === 'loading' ? '正在扫描本机 Agent…' : scanState.kind === 'error' ? '扫描失败，已保留上次有效结果。' : scanState.kind === 'partial-error' ? '扫描完成，但部分来源失败，已保留有效结果。' : scanState.kind === 'empty' ? '扫描完成，未检测到本地 Agent 配置。' : '扫描完成。'}
+                </span>
+                {scanState.kind === 'error' || scanState.kind === 'partial-error' ? <button type="button" onClick={() => void loadScan()} className="rounded-lg border border-current/30 px-2 py-1 font-medium hover:bg-black/5">重试</button> : null}
+              </div>
+              {scanState.message && <div className="mt-1 break-words opacity-85">原因：{scanState.message}</div>}
+              {scan?.scannedAt && <div className="mt-1 opacity-75">上次扫描：{new Date(scan.scannedAt).toLocaleString()}</div>}
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
             <div className="rounded-3xl border border-white/10 bg-white/5 p-4">
               <div className="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-white/35">
@@ -469,7 +512,7 @@ export function AgentMigrationPanel() {
                 className="inline-flex items-center gap-2 rounded-2xl bg-blue-500/15 px-3 py-2 text-xs font-medium text-blue-200 transition-colors hover:bg-blue-500/25"
               >
                 <Clipboard size={14} />
-                {copied === 'prompt' ? '已复制' : '复制 Prompt'}
+                {copied === 'error' ? '复制失败，请检查剪贴板权限' : copied === 'prompt' ? '已复制' : '复制 Prompt'}
               </button>
             </div>
             <pre className="mt-4 max-h-[360px] overflow-auto rounded-3xl border border-white/10 bg-black/20 p-4 text-[12px] leading-6 text-white/80 whitespace-pre-wrap">
@@ -488,7 +531,7 @@ export function AgentMigrationPanel() {
                 className="inline-flex items-center gap-2 rounded-2xl bg-emerald-500/15 px-3 py-2 text-xs font-medium text-emerald-200 transition-colors hover:bg-emerald-500/25"
               >
                 <Clipboard size={14} />
-                {copied === 'json' ? '已复制' : '复制 JSON'}
+                {copied === 'error' ? '复制失败，请检查剪贴板权限' : copied === 'json' ? '已复制' : '复制 JSON'}
               </button>
             </div>
             <pre className="mt-4 max-h-[320px] overflow-auto rounded-3xl border border-white/10 bg-black/20 p-4 text-[12px] leading-6 text-white/75">

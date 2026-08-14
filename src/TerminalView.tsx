@@ -38,6 +38,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
   const xtermRef = useRef<HTMLDivElement>(null)
   const termInstance = useRef<Terminal | null>(null)
   const fitAddon = useRef<FitAddon | null>(null)
+  const resizeTerminalRef = useRef<() => void>(() => undefined)
   const [isReady, setIsReady] = useState(false)
   // const [agentState, setAgentState] = useState<AgentState>('idle')
   // const agentStateRef = useRef<AgentState>('idle')
@@ -149,30 +150,16 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
 
   const buildTerminalOptions = (themeId: string, nextFontSize: number) => {
     const preset = getThemePreset(themeId)
-    const backgroundMap: Record<string, string> = {
-      obsidian: '#151210',
-      graphite: '#17191f',
-      ember: '#1b120e',
-      aurora: '#071a1d',
-      porcelain: '#e9eef9',
-      meadow: '#e8f2ea',
-      'catppuccin-latte': '#eff1f7',
-      'catppuccin-frappe': '#303446',
-      'catppuccin-macchiato': '#24273a',
-      'catppuccin-mocha': '#1e1e2e',
-    }
     return {
       theme: {
-        background: backgroundMap[themeId] || '#151210',
         ...preset.terminal,
       },
-      // Keep terminal geometry stable across themes.
-      fontFamily: '"JetBrains Mono", "Fira Code", "SF Mono", Menlo, Monaco, Consolas, monospace',
+      fontFamily: preset.terminalOptions?.fontFamily || '"JetBrains Mono", "Fira Code", "SF Mono", Menlo, Monaco, Consolas, monospace',
       fontSize: nextFontSize,
       fontWeight: preset.terminalOptions?.fontWeight ?? 400,
       fontWeightBold: preset.terminalOptions?.fontWeightBold ?? 700,
-      lineHeight: 1.4,
-      letterSpacing: 0,
+      lineHeight: preset.terminalOptions?.lineHeight ?? 1.4,
+      letterSpacing: preset.terminalOptions?.letterSpacing ?? 0,
       cursorStyle: preset.terminalOptions?.cursorStyle ?? 'block',
       cursorWidth: preset.terminalOptions?.cursorWidth ?? 1,
       cursorBlink: true,
@@ -198,11 +185,29 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
     termInstance.current = term
     fitAddon.current = fit
 
-    // Delay fitting until the container actually has dimensions
-    setTimeout(() => {
+    let lastCols = 0
+    let lastRows = 0
+    let frame = 0
+    const fitAndResize = () => {
+      if (!xtermRef.current?.offsetParent || xtermRef.current.clientWidth <= 0 || xtermRef.current.clientHeight <= 0) return
       fit.fit()
+      const nextCols = term.cols
+      const nextRows = term.rows
+      if (nextCols !== lastCols || nextRows !== lastRows) {
+        lastCols = nextCols
+        lastRows = nextRows
+        ipcRenderer.send('pty:resize', id, nextCols, nextRows)
+      }
       setIsReady(true)
-    }, 100)
+    }
+    const scheduleFit = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(fitAndResize)
+    }
+    resizeTerminalRef.current = scheduleFit
+    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(scheduleFit) : null
+    resizeObserver?.observe(xtermRef.current)
+    const initialFitTimer = window.setTimeout(scheduleFit, 100)
 
     ipcRenderer.send('pty:create', id)
 
@@ -309,13 +314,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
       }
     })
 
-    const handleResize = () => {
-      if (fitAddon.current && termInstance.current && xtermRef.current?.offsetParent) {
-        fitAddon.current.fit()
-        ipcRenderer.send('pty:resize', id, termInstance.current.cols, termInstance.current.rows)
-      }
-    }
-    window.addEventListener('resize', handleResize)
+    window.addEventListener('resize', scheduleFit)
 
     // Handle direct terminal writes (e.g. image insertion via OSC 1337)
     const handleWriteDirect = (e: Event) => {
@@ -330,7 +329,11 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
       if (captureDebounceRef.current) clearTimeout(captureDebounceRef.current)
       if (captureBufferRef.current.trim().length > 50) flushCaptureBuffer()
       ipcRenderer.removeListener(`pty:data:${id}`, handleData)
-      window.removeEventListener('resize', handleResize)
+      window.removeEventListener('resize', scheduleFit)
+      resizeObserver?.disconnect()
+      window.clearTimeout(initialFitTimer)
+      cancelAnimationFrame(frame)
+      resizeTerminalRef.current = () => undefined
       window.removeEventListener(`terminal:write:${id}`, handleWriteDirect)
       term.dispose()
     }
@@ -342,8 +345,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
       // Small delay allows the DOM to render before measuring
       requestAnimationFrame(() => {
         if (xtermRef.current?.offsetParent) {
-          fitAddon.current?.fit()
-          ipcRenderer?.send('pty:resize', id, termInstance.current!.cols, termInstance.current!.rows)
+          resizeTerminalRef.current()
           termInstance.current?.focus()
         }
       })
@@ -372,8 +374,7 @@ export default function TerminalView({ id, name, isActive, fontSize, themeName, 
       termInstance.current.options.fontSize = fontSize
       requestAnimationFrame(() => {
         if (fitAddon.current && xtermRef.current?.offsetParent) {
-          fitAddon.current.fit()
-          ipcRenderer?.send('pty:resize', id, termInstance.current!.cols, termInstance.current!.rows)
+          resizeTerminalRef.current()
         }
       })
     }

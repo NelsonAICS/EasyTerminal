@@ -404,6 +404,19 @@ select:focus-visible {
   background-clip: padding-box;
 }
 
+/* Problem-page panels historically used white/black utility classes. Keep
+ * their contrast tied to the active theme while the feature-local markup is
+ * migrated to semantic tokens. Status colors (red/amber/green/blue) remain
+ * intentionally untouched. */
+.migration-panel [class*="text-white"] { color: var(--text-primary) !important; }
+.migration-panel [class*="border-white"] { border-color: var(--panel-border) !important; }
+.migration-panel [class*="bg-white"] { background-color: var(--surface-muted) !important; }
+.migration-panel [class*="bg-black"] { background-color: var(--surface-strong) !important; }
+.context-vault-panel [class*="text-white"] { color: var(--text-primary) !important; }
+.context-vault-panel [class*="border-white"] { border-color: var(--panel-border) !important; }
+.context-vault-panel [class*="bg-white"] { background-color: var(--surface-muted) !important; }
+.context-vault-panel [class*="bg-black"] { background-color: var(--surface-strong) !important; }
+
 /* Xterm Custom Overrides */
 .xterm-viewport {
   background-color: transparent !important;

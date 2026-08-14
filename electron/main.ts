@@ -6,8 +6,8 @@ process.on('unhandledRejection', (err) => {
   console.error('UNHANDLED REJECTION:', err);
 });
 
-import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen, dialog, nativeImage, globalShortcut, clipboard } from 'electron'
-import { join, dirname, basename, extname } from 'node:path'
+import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen, dialog, nativeImage, globalShortcut, clipboard, shell } from 'electron'
+import { join, dirname, basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as os from 'node:os'
 import * as pty from 'node-pty'
@@ -30,6 +30,7 @@ import * as unifiedSearch from './services/unified-search'
 import type { CapabilityKind } from '../src/types/capability'
 import type { UIIntent } from '../src/types/ui-intent'
 import type { PendingInteraction } from '../src/types/agent-interaction'
+import type { FileTreeEntry, ListDirectoryRequest, ListDirectoryResult } from '../src/types/agent-extension'
 import { createInstanceId, createTerminalSessionRegistry } from './agent-integration/terminal-session-registry'
 import { buildAgentEnvironment, getTmuxSessionName } from './agent-integration/pty-environment'
 import { createSessionStore } from './agent-integration/session-store'
@@ -56,6 +57,11 @@ ipcMain.handle('store:set', (_event, key: string, value: unknown) => {
 ipcMain.handle('store:delete', (_event, key: string) => {
   store.delete(key)
   return true
+})
+
+ipcMain.handle('theme:set', (_event, source: 'light' | 'dark' | 'system') => {
+  nativeTheme.themeSource = source
+  return nativeTheme.themeSource
 })
 
 // 检测 Ollama 运行状态并列出本地 Embedding 模型
@@ -518,6 +524,16 @@ ipcMain.handle('agent:migration-scan', () => {
   const openClawConfigPath = join(openClawRoot, 'config.json')
   const openClawConfig = safeReadJson(openClawConfigPath)
   const parsedOpenClaw = parseOpenClawConfig(openClawConfig)
+  const sourceErrors: Record<string, string> = {}
+  for (const [sourceId, sourceRoot] of [['claude', claudeRoot], ['codex', codexRoot], ['openclaw', openClawRoot]] as const) {
+    if (!fs.existsSync(sourceRoot)) continue
+    try {
+      fs.readdirSync(sourceRoot)
+    } catch (error) {
+      const code = typeof error === 'object' && error && 'code' in error ? String((error as { code?: unknown }).code || 'EIO') : 'EIO'
+      sourceErrors[sourceId] = code === 'EACCES' || code === 'EPERM' ? '没有权限读取来源目录。' : '来源目录读取失败。'
+    }
+  }
 
   return {
     scannedAt: new Date().toISOString(),
@@ -696,6 +712,8 @@ ipcMain.handle('agent:migration-scan', () => {
         ],
       },
     ],
+    errors: Object.values(sourceErrors),
+    sourceErrors,
   }
 })
 
@@ -891,8 +909,10 @@ const __dirname = dirname(__filename)
 // Enable GPU Acceleration for better transparent window rendering on macOS
 // app.disableHardwareAcceleration()
 
-// Force dark theme for a consistent, sleek terminal look
-nativeTheme.themeSource = 'dark'
+// Match the persisted renderer theme before the first native window is shown.
+// The renderer repeats this through theme:set when the preference is loaded.
+const persistedTheme = store.get('ui_theme', 'obsidian')
+nativeTheme.themeSource = ['porcelain', 'meadow', 'catppuccin-latte'].includes(String(persistedTheme)) ? 'light' : 'dark'
 
 let win: BrowserWindow | null = null
 let islandWin: BrowserWindow | null = null
@@ -1031,6 +1051,30 @@ function createWindow() {
       // allow webview to load local files during dev
       webSecurity: false
     },
+  })
+
+  const expectedWebviewPreload = app.isPackaged
+    ? join(__dirname, '../dist/webview-preload.js')
+    : join(__dirname, '../public/webview-preload.js')
+  win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    const requestedPreload = typeof params.preload === 'string' ? params.preload.replace(/^file:\/\//, '') : ''
+    if (requestedPreload && resolve(requestedPreload) !== resolve(expectedWebviewPreload)) {
+      event.preventDefault()
+      console.warn('[WebView] blocked untrusted preload:', params.preload)
+      return
+    }
+    webPreferences.preload = expectedWebviewPreload
+    webPreferences.allowRunningInsecureContent = false
+    webPreferences.webSecurity = true
+  })
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') void shell.openExternal(parsed.toString())
+    } catch {
+      // Invalid and non-web URLs are denied.
+    }
+    return { action: 'deny' }
   })
 
   // Intercept window close event to show confirmation dialog
@@ -1679,18 +1723,6 @@ app.whenReady().then(() => {
   }, 60 * 60 * 1000);
   */
   
-  ipcMain.on('window:resize', (_event, width: number) => {
-    if (win && !win.isDestroyed()) {
-      const bounds = win.getBounds()
-      win.setBounds({
-        x: bounds.x,
-        y: bounds.y,
-        width: width,
-        height: bounds.height // Keep current height to avoid vertical jumping
-      }, true) // true = animate on macOS
-    }
-  })
-
   // Set up PTY IPC
   ipcMain.on('pty:kill', (_event, id) => {
     terminalSessionRegistry.invalidate(id)
@@ -2183,33 +2215,43 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
       counts: payload.counts,
     }
   })
-  ipcMain.handle('context:import-json', async (event) => {
-    const window = BrowserWindow.fromWebContents(event.sender)
-    const result = await dialog.showOpenDialog(window || undefined, {
-      title: '导入上下文数据',
-      properties: ['openFile'],
-      filters: [{ name: 'JSON', extensions: ['json'] }],
-    })
+  type ContextImportPayload = {
+    records: Array<Record<string, unknown>>;
+    snapshots: Array<Record<string, unknown>>;
+    events: Array<Record<string, unknown>>;
+    snippets: Array<Record<string, unknown>>;
+  }
 
-    if (result.canceled || !result.filePaths[0]) {
-      return { success: false, canceled: true }
+  const validateContextImportPayload = (value: unknown): ContextImportPayload => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('JSON 顶层必须是对象。')
+    const source = value as Record<string, unknown>
+    const readArray = (key: keyof ContextImportPayload) => {
+      const field = source[key]
+      if (field === undefined) return []
+      if (!Array.isArray(field) || field.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+        throw new Error(`${String(key)} 必须是对象数组。`)
+      }
+      return field as Array<Record<string, unknown>>
     }
-
-    const filePath = result.filePaths[0]
-    const raw = fs.readFileSync(filePath, 'utf-8')
-    const parsed = JSON.parse(raw) as {
-      records?: Array<Record<string, unknown>>;
-      snapshots?: Array<Record<string, unknown>>;
-      events?: Array<Record<string, unknown>>;
-      snippets?: Array<Record<string, unknown>>;
+    const payload = {
+      records: readArray('records'),
+      snapshots: readArray('snapshots'),
+      events: readArray('events'),
+      snippets: readArray('snippets'),
     }
+    if (!payload.records.length && !payload.snapshots.length && !payload.events.length && !payload.snippets.length) {
+      throw new Error('文件中没有可导入的上下文数组。')
+    }
+    return payload
+  }
 
+  const importContextPayload = (parsed: ContextImportPayload) => {
     let importedRecords = 0
     let importedSnapshots = 0
     let importedEvents = 0
     let importedSnippets = 0
 
-    for (const record of parsed.records || []) {
+    for (const record of parsed.records) {
       if (typeof record.title !== 'string' || typeof record.summary !== 'string') continue
       contextStore.createRecord({
         scope: (record.scope as 'global' | 'project' | 'task' | 'session') || 'project',
@@ -2226,7 +2268,7 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
       importedRecords += 1
     }
 
-    for (const snapshot of parsed.snapshots || []) {
+    for (const snapshot of parsed.snapshots) {
       if (typeof snapshot.summary_block !== 'string') continue
       contextStore.createSnapshot({
         session_id: typeof snapshot.session_id === 'string' ? snapshot.session_id : '',
@@ -2240,7 +2282,7 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
       importedSnapshots += 1
     }
 
-    for (const sessionEvent of parsed.events || []) {
+    for (const sessionEvent of parsed.events) {
       if (typeof sessionEvent.payload !== 'string') continue
       contextStore.appendSessionEvent({
         session_id: typeof sessionEvent.session_id === 'string' ? sessionEvent.session_id : 'imported_session',
@@ -2251,22 +2293,70 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
       importedEvents += 1
     }
 
-    for (const snippet of parsed.snippets || []) {
+    for (const snippet of parsed.snippets) {
       if (typeof snippet.content !== 'string' || !snippet.content.trim()) continue
       contextManager.saveContextSnippet(snippet.content.trim(), typeof snippet.name === 'string' ? `Imported:${snippet.name}` : 'ImportedContext')
       importedSnippets += 1
     }
 
-    return {
-      success: true,
-      filePath,
-      counts: {
-        records: importedRecords,
-        snapshots: importedSnapshots,
-        events: importedEvents,
-        snippets: importedSnippets,
-      },
+    return { records: importedRecords, snapshots: importedSnapshots, events: importedEvents, snippets: importedSnippets }
+  }
+
+  ipcMain.handle('context:import-preview', async (event) => {
+    const window = BrowserWindow.fromWebContents(event.sender)
+    const result = await dialog.showOpenDialog(window || undefined, {
+      title: '导入上下文数据',
+      properties: ['openFile'],
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+    })
+    if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true }
+
+    try {
+      const filePath = result.filePaths[0]
+      const parsed = validateContextImportPayload(JSON.parse(fs.readFileSync(filePath, 'utf-8')))
+      return {
+        success: true,
+        filePath,
+        payload: parsed,
+        counts: {
+          records: parsed.records.filter(item => typeof item.title === 'string' && typeof item.summary === 'string').length,
+          snapshots: parsed.snapshots.filter(item => typeof item.summary_block === 'string').length,
+          events: parsed.events.filter(item => typeof item.payload === 'string').length,
+          snippets: parsed.snippets.filter(item => typeof item.content === 'string' && Boolean(item.content.trim())).length,
+        },
+      }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : '无法读取或校验 JSON。' }
     }
+  })
+
+  ipcMain.handle('context:import-confirm', (_event, payload: unknown) => {
+    try {
+      const parsed = validateContextImportPayload(payload)
+      return { success: true, counts: importContextPayload(parsed) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : '导入失败。' }
+    }
+  })
+
+  // Compatibility path for older callers. New UI uses preview + confirm.
+  ipcMain.handle('context:import-json', async (event) => {
+    const preview = await (async () => {
+      const window = BrowserWindow.fromWebContents(event.sender)
+      const result = await dialog.showOpenDialog(window || undefined, {
+        title: '导入上下文数据',
+        properties: ['openFile'],
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+      })
+      if (result.canceled || !result.filePaths[0]) return { success: false, canceled: true } as const
+      try {
+        return { success: true, filePath: result.filePaths[0], payload: validateContextImportPayload(JSON.parse(fs.readFileSync(result.filePaths[0], 'utf-8'))) } as const
+      } catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : '无法读取或校验 JSON。' } as const
+      }
+    })()
+    if (!preview.success) return preview
+    return { success: true, filePath: preview.filePath, counts: importContextPayload(preview.payload) }
   })
 
   ipcMain.handle('file:read', async (_event, filePath: string) => {
@@ -2344,6 +2434,74 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
     }
   })
 
+  // The file explorer uses a separate async DTO so existing fs:list callers
+  // keep their legacy response shape while large directories never block the
+  // Electron main process with synchronous scans.
+  ipcMain.handle('fs:tree:list', async (_event, request: ListDirectoryRequest): Promise<ListDirectoryResult> => {
+    const requestId = typeof request?.requestId === 'string' ? request.requestId : ''
+    const directoryPath = typeof request?.path === 'string' ? resolve(request.path) : ''
+    if (!requestId || !directoryPath) {
+      return {
+        ok: false,
+        requestId,
+        path: directoryPath,
+        error: { code: 'EINVAL', message: '目录请求缺少有效路径或 requestId。' },
+      }
+    }
+
+    try {
+      const dirents = await fs.promises.readdir(directoryPath, { withFileTypes: true })
+      const entries = await Promise.all(dirents
+        .filter(entry => request.includeHidden === true || !entry.name.startsWith('.'))
+        .map(async (entry): Promise<FileTreeEntry> => {
+          const entryPath = join(directoryPath, entry.name)
+          let kind: FileTreeEntry['kind'] = entry.isDirectory() ? 'directory' : 'file'
+          let size: number | undefined
+          let mtime: string | undefined
+
+          try {
+            const stat = await fs.promises.lstat(entryPath)
+            if (stat.isSymbolicLink()) kind = 'symlink'
+            else if (stat.isDirectory()) kind = 'directory'
+            else kind = 'file'
+            size = stat.size
+            mtime = stat.mtime.toISOString()
+          } catch {
+            // A broken symlink is still useful in the tree; leave metadata out.
+            kind = entry.isSymbolicLink() ? 'symlink' : kind
+          }
+
+          return {
+            name: entry.name,
+            path: entryPath,
+            kind,
+            ...(size === undefined ? {} : { size }),
+            ...(mtime ? { mtime } : {}),
+            extension: extname(entry.name).replace('.', '').toLowerCase() || undefined,
+          }
+        }))
+
+      entries.sort((a, b) => {
+        const aDirectory = a.kind === 'directory'
+        const bDirectory = b.kind === 'directory'
+        if (aDirectory !== bDirectory) return aDirectory ? -1 : 1
+        return a.name.localeCompare(b.name)
+      })
+
+      return { ok: true, requestId, path: directoryPath, entries }
+    } catch (error) {
+      const code = typeof error === 'object' && error && 'code' in error
+        ? String((error as { code?: unknown }).code || 'EIO')
+        : 'EIO'
+      const message = code === 'EACCES' || code === 'EPERM'
+        ? '没有权限读取此目录。'
+        : code === 'ENOENT'
+          ? '目录不存在，可能已被移动或删除。'
+          : '读取目录失败，请稍后重试。'
+      return { ok: false, requestId, path: directoryPath, error: { code, message } }
+    }
+  })
+
   ipcMain.handle('fs:mkdir', async (_event, dirPath: string) => {
     try {
       fs.mkdirSync(dirPath, { recursive: true })
@@ -2364,10 +2522,10 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
 
   ipcMain.handle('fs:delete', async (_event, targetPath: string) => {
     try {
-      fs.rmSync(targetPath, { recursive: true, force: true })
-      return true
+      await shell.trashItem(resolve(targetPath))
+      return { ok: true }
     } catch {
-      return false
+      return { ok: false, error: '无法将项目移入系统废纸篓。' }
     }
   })
 
@@ -2447,6 +2605,17 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
   })
 
   // ── Browser IPC ───────────────────────────────────────────────────
+  ipcMain.handle('webview:open-external', async (_event, rawUrl: string) => {
+    try {
+      const parsed = new URL(rawUrl)
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return { ok: false, error: '只允许打开 http 或 https 地址。' }
+      await shell.openExternal(parsed.toString())
+      return { ok: true }
+    } catch {
+      return { ok: false, error: '地址无效或系统浏览器无法打开。' }
+    }
+  })
+
   ipcMain.handle('browser:send-to-terminal', (_event, text: string) => {
     // Save browser selection to context
     if (text && text.trim()) {

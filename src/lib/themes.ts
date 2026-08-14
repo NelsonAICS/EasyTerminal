@@ -5,6 +5,7 @@ export interface ThemePreset {
   className: string;
   accent: string;
   terminal: {
+    background: string;
     foreground: string;
     cursor: string;
     selectionBackground: string;
@@ -44,6 +45,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: '',
     accent: '#7385e6',
     terminal: {
+      background: '#151210',
       foreground: '#f3efe9',
       cursor: '#7385e6',
       selectionBackground: 'rgba(115, 133, 230, 0.24)',
@@ -72,6 +74,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-graphite',
     accent: '#94a3b8',
     terminal: {
+      background: '#17191f',
       foreground: '#e5ecf4',
       cursor: '#cbd5e1',
       selectionBackground: 'rgba(148, 163, 184, 0.28)',
@@ -100,6 +103,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-ember',
     accent: '#fb923c',
     terminal: {
+      background: '#1b120e',
       foreground: '#ffe7cf',
       cursor: '#fb923c',
       selectionBackground: 'rgba(251, 146, 60, 0.28)',
@@ -128,6 +132,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-aurora',
     accent: '#2dd4bf',
     terminal: {
+      background: '#071a1d',
       foreground: '#d6fff7',
       cursor: '#5eead4',
       selectionBackground: 'rgba(45, 212, 191, 0.28)',
@@ -156,6 +161,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-porcelain',
     accent: '#4f46e5',
     terminal: {
+      background: '#e9eef9',
       foreground: '#334155',
       cursor: '#6366f1',
       selectionBackground: 'rgba(129, 140, 248, 0.24)',
@@ -184,7 +190,8 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-meadow',
     accent: '#22c55e',
     terminal: {
-      foreground: '#f5fff8',
+      background: '#e8f2ea',
+      foreground: '#234231',
       cursor: '#86efac',
       selectionBackground: 'rgba(74, 222, 128, 0.24)',
       black: '#123524',
@@ -212,6 +219,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-catppuccin-latte',
     accent: '#1e66f5',
     terminal: {
+      background: '#eff1f7',
       foreground: '#4c4f69',
       cursor: '#1e66f5',
       selectionBackground: 'rgba(30, 102, 245, 0.18)',
@@ -246,6 +254,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-catppuccin-frappe',
     accent: '#8caaee',
     terminal: {
+      background: '#303446',
       foreground: '#c6d0f5',
       cursor: '#8caaee',
       selectionBackground: 'rgba(140, 170, 238, 0.22)',
@@ -279,6 +288,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-catppuccin-macchiato',
     accent: '#8aadf4',
     terminal: {
+      background: '#24273a',
       foreground: '#cad3f5',
       cursor: '#8aadf4',
       selectionBackground: 'rgba(138, 173, 244, 0.22)',
@@ -312,6 +322,7 @@ export const THEME_PRESETS: ThemePreset[] = [
     className: 'theme-catppuccin-mocha',
     accent: '#89b4fa',
     terminal: {
+      background: '#1e1e2e',
       foreground: '#cdd6f4',
       cursor: '#89b4fa',
       selectionBackground: 'rgba(137, 180, 250, 0.22)',

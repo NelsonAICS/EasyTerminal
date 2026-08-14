@@ -15,7 +15,9 @@ import { UIButton, UIInput, UIModal } from './components/ui'
 import { searchManualCommandSuggestions } from './data/commandManual'
 import { TERMINAL_AGENT_COPY } from './lib/ui-copy'
 import { getThemePreset, THEME_PRESETS } from './lib/themes'
-import { type FileEntry, type UIIntent } from './types/agent-extension'
+import { bindWebviewController, normalizeWebUrl, type WebLoadState } from './features/webview/webview-controller'
+import { type FileEntry, type FileTreeState, type ListDirectoryResult, type UIIntent } from './types/agent-extension'
+import { applyDirectoryResult, beginDirectoryLoad, createFileTreeState, setTreeRoot, toggleDirectory } from './lib/file-tree'
 import type { QuickTool } from './components/CommandManualModal'
 
 // Lazy-load heavy panel components for faster initial render
@@ -65,6 +67,10 @@ interface Session {
 interface WebviewElement extends HTMLElement {
   setZoomFactor: (factor: number) => void
   send: (channel: string, ...args: unknown[]) => void
+  getURL: () => string
+  getTitle: () => string
+  canGoBack: () => boolean
+  canGoForward: () => boolean
 }
 
 interface InputSuggestion {
@@ -312,6 +318,7 @@ function App() {
   const [isPickerActive, setIsPickerActive] = useState<boolean>(false)
   const [webviewPreloadPath, setWebviewPreloadPath] = useState<string>('')
   const [webviewZoom, setWebviewZoom] = useState<number>(1)
+  const [previewWebState, setPreviewWebState] = useState<WebLoadState>({ kind: 'booting' })
   const [analytics, setAnalytics] = useState<{cost?: number, tokens?: number}>({cost: 0, tokens: 0})
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const workspaceWidthRef = useRef(workspaceWidth)
@@ -348,6 +355,8 @@ function App() {
   useEffect(() => {
     if (!ipcRenderer) return
     ipcRenderer.invoke('store:set', 'ui_theme', theme).catch(() => undefined)
+    const lightThemes = new Set(['porcelain', 'meadow', 'catppuccin-latte'])
+    ipcRenderer.invoke('theme:set', lightThemes.has(theme) ? 'light' : 'dark').catch(() => undefined)
   }, [theme])
 
   useEffect(() => {
@@ -445,26 +454,50 @@ function App() {
     ipcRenderer.invoke('store:set', 'terminal_agent_recent_commands', recentTerminalAgentCommands).catch(() => undefined)
   }, [recentTerminalAgentCommands])
 
-  // Handle window resizing based on preview state
-  useEffect(() => {
-    if (!ipcRenderer) return;
-    const hasPreview = !!previewUrl;
-    // 1600px when preview open, 1000px when closed. Use current height to avoid jumping.
-    ipcRenderer.send('window:resize', hasPreview ? 1600 : 1000);
-  }, [previewUrl]);
-
   const [currentDir, setCurrentDir] = useState<string>('')
-  const [dirFiles, setDirFiles] = useState<FileEntry[]>([])
+  const [fileTree, setFileTree] = useState<FileTreeState>(() => createFileTreeState(''))
   const [selectedPaths, setSelectedPaths] = useState<string[]>([])
-  
+  const [favoritePaths, setFavoritePaths] = useState<string[]>([])
+  const [recentDirs, setRecentDirs] = useState<string[]>([])
+  const fileTreeRequestIdRef = useRef(0)
+
   const loadFiles = (dir: string) => {
-    if (ipcRenderer) {
-      ipcRenderer.invoke('fs:list', dir).then((files: FileEntry[]) => {
-        setDirFiles(files || [])
-        setSelectedPaths([])
-      })
-    }
+    if (!ipcRenderer || !dir) return
+    fileTreeRequestIdRef.current += 1
+    const requestId = `file-tree-${Date.now()}-${fileTreeRequestIdRef.current}`
+    setFileTree(previous => beginDirectoryLoad(setTreeRoot(previous, dir), dir, requestId))
+    ipcRenderer.invoke('fs:tree:list', { path: dir, includeHidden: false, requestId }).then((result: ListDirectoryResult) => {
+      setFileTree(previous => applyDirectoryResult(previous, result))
+    }).catch(() => {
+      setFileTree(previous => applyDirectoryResult(previous, {
+        ok: false,
+        requestId,
+        path: dir,
+        error: { code: 'EIO', message: '读取目录失败，请稍后重试。' },
+      }))
+    })
   }
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    Promise.all([
+      ipcRenderer.invoke('store:get', 'file_tree_favorites', []),
+      ipcRenderer.invoke('store:get', 'file_tree_recent_dirs', []),
+    ]).then(([storedFavorites, storedRecent]) => {
+      if (Array.isArray(storedFavorites)) setFavoritePaths(storedFavorites.filter((path): path is string => typeof path === 'string').slice(0, 100))
+      if (Array.isArray(storedRecent)) setRecentDirs(storedRecent.filter((path): path is string => typeof path === 'string').slice(0, 20))
+    }).catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    ipcRenderer.invoke('store:set', 'file_tree_favorites', favoritePaths).catch(() => undefined)
+  }, [favoritePaths])
+
+  useEffect(() => {
+    if (!ipcRenderer) return
+    ipcRenderer.invoke('store:set', 'file_tree_recent_dirs', recentDirs).catch(() => undefined)
+  }, [recentDirs])
 
   const [activeFile, setActiveFile] = useState<string | null>(null)
   
@@ -809,72 +842,65 @@ function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown)
   }, [])
 
-  // Handle Webview IPC messages for DOM Picker
+  // Shared WebView lifecycle for the independent preview.
   useEffect(() => {
     const webview = webviewRef.current;
     if (!webview) return;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const handleIpcMessage = (event: any) => {
-      if (event.channel === 'element-picked') {
-        const data = event.args[0];
-        setIsPickerActive(false);
-        
-        // Format the picked element into a readable context snippet
-        const contextStr = `[Picked Element Context]\nTag: <${data.tagName}>\nSelector: ${data.selector}\nText: ${data.textContent}\nOuter HTML:\n${data.outerHTML}\n`;
-        
-        // Insert into input box
-        setInput(prev => prev + (prev ? '\n\n' : '') + contextStr);
-        textareaRef.current?.focus();
-      } else if (event.channel === 'picker-status-changed') {
-        setIsPickerActive(event.args[0]);
-      }
-    };
-
-    webview.addEventListener('ipc-message', handleIpcMessage);
-    
-    // Ensure preload script is attached
-    webview.addEventListener('dom-ready', () => {
-      console.log('Webview DOM ready, isPickerActive:', isPickerActive);
-      if (isPickerActive) {
-        try {
-          webview.send('toggle-picker', true);
-        } catch (e) {
-          console.error('Failed to send toggle-picker on dom-ready', e);
+    return bindWebviewController(webview, {
+      onState: nextState => {
+        setPreviewWebState(nextState)
+        if (nextState.kind === 'ready') {
+          try { webview.setZoomFactor(webviewZoom) } catch { /* replayed on dom-ready */ }
         }
-      }
-    });
-
-    return () => {
-      webview.removeEventListener('ipc-message', handleIpcMessage);
-    };
-  }, [previewUrl, isPickerActive]);
+      },
+      onNavigation: nextUrl => {
+        if (nextUrl) setInputUrl(nextUrl)
+      },
+      onMessage: message => {
+        if (message.channel === 'element-picked') {
+          const data = message.args[0] as { tagName?: string; selector?: string; textContent?: string; outerHTML?: string } | undefined;
+          if (!data) return
+          const safeOuterHTML = String(data.outerHTML || '').slice(0, 12000)
+          const contextStr = `[Picked Element Context]\nTag: <${data.tagName || 'element'}>\nSelector: ${data.selector || ''}\nText: ${data.textContent || ''}\nOuter HTML:\n${safeOuterHTML}\n`;
+          setIsPickerActive(false)
+          setInput(prev => prev + (prev ? '\n\n' : '') + contextStr)
+          textareaRef.current?.focus()
+        } else if (message.channel === 'picker-status-changed') {
+          setIsPickerActive(Boolean(message.args[0]))
+        }
+      },
+      onDomReady: () => {
+        try { webview.setZoomFactor(webviewZoom) } catch { /* guest may still be attaching */ }
+        if (isPickerActive) {
+          try { webview.send('toggle-picker', true) } catch { /* retry on next dom-ready */ }
+        }
+      },
+    })
+  }, [isPickerActive, previewUrl, webviewZoom])
 
   useEffect(() => {
     if (webviewRef.current) {
       try {
-        webviewRef.current.setZoomFactor(webviewZoom);
+        webviewRef.current.setZoomFactor(webviewZoom)
       } catch {
-        // webview might not be ready
+        // Replayed by the shared controller after dom-ready/ready.
       }
     }
-  }, [webviewZoom]);
+  }, [webviewZoom])
 
   const toggleDomPicker = () => {
     const webview = webviewRef.current;
     if (webview) {
       const newState = !isPickerActive;
       setIsPickerActive(newState);
-      
-      console.log('Sending toggle-picker to webview:', newState);
-      
-      try {
-        webview.send('toggle-picker', newState);
-      } catch (e) {
-        console.error('Failed to send toggle-picker, webview might not be ready or preload failed', e);
-      }
+      try { webview.send('toggle-picker', newState) } catch { /* dom-ready will replay */ }
     }
   };
+
+  /*
+   * The old anonymous dom-ready listener was intentionally removed above:
+   * bindWebviewController owns registration and cleanup for every preview.
+   */
   // Context menu listener
   useEffect(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -944,7 +970,8 @@ function App() {
     if (newFileName && newFileName.trim()) {
       const newPath = currentDir + '/' + newFileName.trim()
       if (ipcRenderer) {
-        ipcRenderer.invoke('file:write', newPath, '').then(() => {
+        ipcRenderer.invoke('file:write', newPath, '').then((result: unknown) => {
+          if (result !== true && !(result && typeof result === 'object' && (result as { ok?: boolean }).ok === true)) return
           loadFiles(currentDir)
           closeFloatingPages()
           setEditorFile(newPath)
@@ -981,19 +1008,28 @@ function App() {
 
   const handleCreateFolder = (name: string) => {
     if (!ipcRenderer || !name.trim()) return
-    ipcRenderer.invoke('fs:mkdir', `${currentDir}/${name.trim()}`).then(() => loadFiles(currentDir))
+    ipcRenderer.invoke('fs:mkdir', `${currentDir}/${name.trim()}`).then((result: unknown) => {
+      if (result === true || (result && typeof result === 'object' && (result as { ok?: boolean }).ok === true)) loadFiles(currentDir)
+    })
   }
 
   const handleDirClick = (dir: string) => {
     setCurrentDir(dir)
+    setSelectedPaths([])
+    setRecentDirs(previous => [dir, ...previous.filter(item => item !== dir)].slice(0, 20))
     loadFiles(dir)
+  }
+
+  const handleToggleDirectory = (path: string) => {
+    const directory = fileTree.directories[path]
+    setFileTree(previous => toggleDirectory(previous, path))
+    if (!directory || directory.loadState === 'idle' || directory.loadState === 'error') loadFiles(path)
   }
 
   const handleParentDir = () => {
     if (ipcRenderer) {
       ipcRenderer.invoke('fs:parent', currentDir).then((dir: string) => {
-        setCurrentDir(dir)
-        loadFiles(dir)
+        handleDirClick(dir)
       })
     }
   }
@@ -2083,7 +2119,10 @@ function App() {
                 {agentPanel === 'ui' && <UIShowcasePanel />}
                 {agentPanel === 'migration' && <AgentMigrationPanel />}
                 {agentPanel === 'capabilities' && <CapabilityPanel />}
-                {agentPanel === 'browser' && <BrowserPanel />}
+                {agentPanel === 'browser' && <BrowserPanel onSendToTerminal={(value) => {
+                  setInput(previous => previous.trim() ? `${previous}\n${value}` : value)
+                  focusInputBox()
+                }} />}
               </React.Suspense>
             </div>
           </div>
@@ -2218,6 +2257,7 @@ function App() {
                 onClick={() => {
                   setPreviewUrl('http://localhost:3000')
                   setInputUrl('http://localhost:3000')
+                  setPreviewWebState({ kind: 'booting' })
                 }}
                 className={shellToolbarButtonClass}
                 title="Preview Localhost"
@@ -2523,7 +2563,7 @@ function App() {
             className="relative min-h-0 shrink-0 animate-in slide-in-from-right-4 duration-300 overflow-hidden rounded-[1.4rem] border border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--panel-bg)_94%,transparent)] shadow-[0_18px_40px_-28px_var(--shadow-color)]"
             style={{ width: `${workspaceWidth}px` }}
           >
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">
               <div className="flex h-11 shrink-0 items-center justify-between border-b border-[var(--panel-border)] bg-[var(--surface-muted)] px-4">
                 <div className="flex items-center gap-3 text-sm font-mono text-[var(--text-secondary)] overflow-hidden">
                   <Globe size={14} className="text-blue-400 shrink-0" />
@@ -2537,10 +2577,15 @@ function App() {
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         const target = e.currentTarget;
-                        let val = target.value;
-                        if (!val.startsWith('http')) val = 'http://' + val;
-                        setInputUrl(val);
-                        setPreviewUrl(val);
+                        try {
+                          const val = normalizeWebUrl(target.value, 'http:');
+                          setInputUrl(val);
+                          setPreviewUrl(val);
+                          setPreviewWebState({ kind: 'loading', url: val });
+                        } catch (error) {
+                          const message = error instanceof Error ? error.message : '网址无效。';
+                          setPreviewWebState({ kind: 'error', url: target.value, code: -1, description: message });
+                        }
                         target.blur();
                       }
                     }}
@@ -2564,7 +2609,7 @@ function App() {
                   </button>
                 </div>
               </div>
-              <div className="flex-1 bg-white relative overflow-hidden group/webview">
+              <div className="group/webview relative min-h-0 flex-1 overflow-hidden bg-[var(--surface-strong)]">
                 {isPickerActive && (
                   <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 pointer-events-none bg-blue-500 text-white text-xs px-4 py-1.5 rounded-full shadow-lg font-mono animate-bounce">
                     Hover elements to inspect. Click to pick.
@@ -2576,6 +2621,19 @@ function App() {
                   className="w-full h-full border-none outline-none"
                   preload={webviewPreloadPath || undefined}
                 ></webview>
+                {(previewWebState.kind === 'error' || previewWebState.kind === 'crashed') && (
+                  <div className="absolute inset-0 z-20 flex items-center justify-center bg-[var(--panel-bg)] p-6">
+                    <div className="w-full max-w-md rounded-2xl border border-red-400/25 bg-red-500/10 p-5 text-sm text-[var(--text-primary)]">
+                      <div className="font-medium">{previewWebState.kind === 'crashed' ? '网页进程已崩溃' : '本地预览无法加载'}</div>
+                      <div className="mt-2 break-all text-xs text-[var(--text-secondary)]">地址：{previewWebState.kind === 'error' ? (previewWebState.validatedURL || previewWebState.url) : inputUrl}</div>
+                      <div className="mt-1 text-xs text-red-700 dark:text-red-200">{previewWebState.kind === 'crashed' ? previewWebState.reason : `错误码：${previewWebState.code} · ${previewWebState.description}`}</div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button type="button" onClick={() => { setPreviewWebState({ kind: 'loading', url: inputUrl }); setPreviewUrl(inputUrl); }} className="rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs text-white">重试</button>
+                        <button type="button" onClick={() => void ipcRenderer?.invoke('webview:open-external', previewWebState.kind === 'error' ? (previewWebState.validatedURL || previewWebState.url) : inputUrl)} className="rounded-lg border border-[var(--panel-border)] px-3 py-1.5 text-xs text-[var(--text-primary)]">外部打开</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -2594,13 +2652,20 @@ function App() {
             >
               <FileExplorerPanel
                 currentDir={currentDir}
-                files={dirFiles}
+                tree={fileTree}
                 activeFile={activeFile}
                 selectedPaths={selectedPaths}
+                favoritePaths={favoritePaths}
+                recentDirs={recentDirs}
                 onGoUp={handleParentDir}
                 onOpen={openFileEntry}
+                onEnterDirectory={handleDirClick}
+                onToggleDirectory={handleToggleDirectory}
+                onRetryDirectory={(path) => loadFiles(path)}
                 onRefresh={() => loadFiles(currentDir)}
                 onSelectPaths={setSelectedPaths}
+                onToggleFavorite={(path) => setFavoritePaths(previous => previous.includes(path) ? previous.filter(item => item !== path) : [...previous, path])}
+                onOpenRecent={handleDirClick}
                 onCreateFile={() => {
                   setShowNewFileModal(true)
                   setNewFileName('untitled.txt')
@@ -2750,7 +2815,7 @@ function App() {
                       }}
                       className={`relative h-6 w-11 rounded-full transition-colors ${autoCaptureTerminal ? 'bg-[var(--accent)]' : 'bg-[var(--panel-border)]'}`}
                     >
-                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${autoCaptureTerminal ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-[var(--text-primary)] shadow-sm transition-transform ${autoCaptureTerminal ? 'translate-x-5' : 'translate-x-0.5'}`} />
                     </button>
                   </div>
 
@@ -2768,7 +2833,7 @@ function App() {
                       }}
                       className={`relative h-6 w-11 rounded-full transition-colors ${autoAnalyzeContext ? 'bg-[var(--accent)]' : 'bg-[var(--panel-border)]'}`}
                     >
-                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform ${autoAnalyzeContext ? 'translate-x-5' : 'translate-x-0.5'}`} />
+                      <span className={`absolute top-0.5 h-5 w-5 rounded-full bg-[var(--text-primary)] shadow-sm transition-transform ${autoAnalyzeContext ? 'translate-x-5' : 'translate-x-0.5'}`} />
                     </button>
                   </div>
                 </div>

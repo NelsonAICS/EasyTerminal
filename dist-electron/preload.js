@@ -1,13 +1,20 @@
 //#region electron/preload.ts
 window.addEventListener("DOMContentLoaded", () => {
-	const replaceText = (selector, text) => {
-		const element = document.getElementById(selector);
-		if (element) element.innerText = text;
+	let e = (e, t) => {
+		let n = document.getElementById(e);
+		n && (n.innerText = t);
 	};
-	for (const dependency of [
+	for (let t of [
 		"chrome",
 		"node",
 		"electron"
-	]) replaceText(`${dependency}-version`, process.versions[dependency]);
+	]) e(`${t}-version`, process.versions[t]);
+});
+var e = window.require?.("electron")?.ipcRenderer;
+e && (window.electronAPI = {
+	...window.electronAPI,
+	agentRespond: (t) => e.invoke("island:interaction-response", t),
+	setIslandInteractive: (t) => e.invoke("island:set-interactive", t),
+	jumpToTerminal: (t) => e.invoke("island:jump-to-terminal", t)
 });
 //#endregion
