@@ -1,11 +1,11 @@
 import net from 'node:net'
 import fs from 'node:fs'
-import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { createHookServer } from '../../electron/agent-integration/hook-server'
 import { FakeAgentAdapter } from '../../electron/agent-integration/adapters/fake-agent-adapter'
 import { createSessionStore } from '../../electron/agent-integration/session-store'
 import { createTerminalSessionRegistry } from '../../electron/agent-integration/terminal-session-registry'
+import { buildAgentHookSocketPath } from '../../electron/agent-integration/pty-environment'
 
 const connectAndSend = (socketPath: string, input: unknown) => new Promise<Record<string, unknown>>((resolve, reject) => {
   const socket = net.createConnection(socketPath)
@@ -25,7 +25,10 @@ const connectAndSend = (socketPath: string, input: unknown) => new Promise<Recor
 
 describe('HookServer socket transport', () => {
   it('ISL-SEC-002 starts a user-only Unix socket and accepts a bound event', async () => {
-    const socketPath = path.join('/private/tmp', `easy-terminal-test-${process.pid}-${Date.now()}.sock`)
+    const socketPath = buildAgentHookSocketPath(
+      `easy-instance-test-${process.pid}-${Date.now()}-with-a-long-uuid-like-value`,
+      process.platform,
+    )
     const registry = createTerminalSessionRegistry()
     registry.register({ terminalSessionId: 'tab-A', instanceId: 'instance-A', channelToken: 'token-A' })
     const server = createHookServer({ socketPath, registry, store: createSessionStore(), adapters: [new FakeAgentAdapter()] })

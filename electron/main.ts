@@ -6,12 +6,12 @@ process.on('unhandledRejection', (err) => {
   console.error('UNHANDLED REJECTION:', err);
 });
 
-import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen, dialog, nativeImage, globalShortcut, clipboard, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, Menu, screen, dialog, nativeImage, globalShortcut, clipboard, shell, safeStorage } from 'electron'
 import { join, dirname, basename, extname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as os from 'node:os'
 import * as pty from 'node-pty'
-import { exec, execSync, execFileSync } from 'child_process'
+import { exec, execSync, execFileSync, spawn } from 'child_process'
 import * as fs from 'node:fs'
 import { contextManager } from './context-manager'
 import Store from 'electron-store'
@@ -24,19 +24,43 @@ import { createContextOrchestrator } from './services/context-orchestrator'
 import { createDriftGuard } from './services/drift-guard'
 import { createDefaultCapabilityRegistry } from './services/capability-registry'
 import { chatCompletion, simpleCompletion, type LLMConfig } from './services/llm-gateway'
+import { ProviderRepository } from './services/providers/provider-repository'
+import { ProviderRegistry, createDefaultProviderAdapters } from './services/providers/provider-registry'
+import type { ProviderKeyValueStore, ProviderSecretVault } from './services/providers/provider-types'
+import type { ApplicationModelDefaults, ModelRef, ProviderInput } from '../src/types/model-provider'
+import { NodeDefinitionService } from './services/workflow-v2/node-definition-service'
+import type { NodeDefinitionStore } from './services/workflow-v2/node-definition-service'
+import type { PublishedNodeDefinition } from './services/workflow-v2/node-definition'
+import { WorkflowRepository } from './services/workflow-v2/repository'
+import { WorkflowRunRepository } from './services/workflow-v2/run-repository'
+import { WorkflowRunManager } from './services/workflow-v2/run-manager'
+import { createCoreWorkflowRegistries } from './services/workflow-v2/runtime'
+import { parseWorkflowCancelRequest, parseWorkflowExecuteRequest, parseWorkflowResumeConfirmationRequest, workflowSaveRevisionRequestSchema } from './services/workflow-v2/ipc-controller'
+import { DatabaseAdapterRegistry } from './services/database-adapters/registry'
+import { SqliteAdapter } from './services/database-adapters/sqlite-adapter'
+import { CommandRegistry } from './services/shell/command-registry'
+import { ControlledShellRunner } from './services/shell/controlled-shell-runner'
+import { CommandDefinitionService } from './services/shell/command-definition-service'
+import type { CommandDefinitionStore } from './services/shell/command-definition-service'
+import { createShellService } from './services/workflow-v2/nodes/shell'
+import { createSqlService } from './services/workflow-v2/nodes/sql'
+import type { SqliteDatabase } from './services/workflow-v2/sqlite'
 import { type EmbeddingConfig } from './services/vector-store'
 import { getIslandManager } from './services/island-manager'
 import * as unifiedSearch from './services/unified-search'
+import { executeBrowserScript } from './services/browser-script'
 import type { CapabilityKind } from '../src/types/capability'
 import type { UIIntent } from '../src/types/ui-intent'
 import type { PendingInteraction } from '../src/types/agent-interaction'
 import type { FileTreeEntry, ListDirectoryRequest, ListDirectoryResult } from '../src/types/agent-extension'
 import { createInstanceId, createTerminalSessionRegistry } from './agent-integration/terminal-session-registry'
-import { buildAgentEnvironment, getTmuxSessionName } from './agent-integration/pty-environment'
+import { buildAgentEnvironment, buildAgentHookSocketPath, getTmuxSessionName, resolveTerminalShell } from './agent-integration/pty-environment'
 import { createSessionStore } from './agent-integration/session-store'
 import { createHookServer, type HookServer } from './agent-integration/hook-server'
 import { createInteractionCoordinator, type InteractionCoordinator } from './agent-integration/interaction-coordinator'
 import { createDefaultAdapters } from './agent-integration/adapters'
+import { installClaudeCodeHook } from './agent-integration/claude-code-hook'
+import { installOpenCodePlugin } from './agent-integration/open-code-plugin'
 import {
   resolveAnthropicMessagesEndpoint,
   resolveGeminiGenerateContentEndpoint,
@@ -45,6 +69,99 @@ import {
 } from '../src/shared/api-endpoints'
 
 const store = new Store()
+
+class ElectronProviderSecretVault implements ProviderSecretVault {
+  private key(providerId: string): string {
+    return `workflow_v2_provider_secret:${providerId}`
+  }
+
+  get(providerId: string): string | undefined {
+    const encrypted = store.get<string | null>(this.key(providerId), null)
+    if (!encrypted || !safeStorage.isEncryptionAvailable()) return undefined
+    try {
+      return safeStorage.decryptString(Buffer.from(encrypted, 'base64'))
+    } catch {
+      return undefined
+    }
+  }
+
+  set(providerId: string, value: string): void {
+    if (!safeStorage.isEncryptionAvailable()) {
+      throw new Error('系统安全存储暂不可用，请稍后重试')
+    }
+    const encrypted = safeStorage.encryptString(value).toString('base64')
+    store.set(this.key(providerId), encrypted)
+  }
+
+  delete(providerId: string): void {
+    store.delete(this.key(providerId))
+  }
+}
+
+const providerRepository = new ProviderRepository(
+  store as unknown as ProviderKeyValueStore,
+  new ElectronProviderSecretVault(),
+)
+const providerRegistry = new ProviderRegistry({
+  repository: providerRepository,
+  adapters: createDefaultProviderAdapters(),
+})
+const nodeDefinitionService = new NodeDefinitionService(store as unknown as NodeDefinitionStore)
+const commandDefinitionService = new CommandDefinitionService(store as unknown as CommandDefinitionStore)
+let workflowV2Manager: WorkflowRunManager | null = null
+let workflowV2Repository: WorkflowRepository | null = null
+let workflowV2CommandRegistry: CommandRegistry | null = null
+
+function requireWorkflowV2Manager(): WorkflowRunManager {
+  if (!workflowV2Manager) throw new Error('Workflow V2 runtime is not ready')
+  return workflowV2Manager
+}
+
+function requireWorkflowV2Repository(): WorkflowRepository {
+  if (!workflowV2Repository) throw new Error('Workflow V2 repository is not ready')
+  return workflowV2Repository
+}
+
+function initializeWorkflowV2Runtime(): void {
+  const database = getDatabase() as unknown as SqliteDatabase
+  workflowV2Repository = new WorkflowRepository(database)
+  const runRepository = new WorkflowRunRepository(database, workflowV2Repository)
+  const databaseAdapters = new DatabaseAdapterRegistry()
+  databaseAdapters.register('default', new SqliteAdapter(database))
+  const commandRegistry = new CommandRegistry()
+  workflowV2CommandRegistry = commandRegistry
+  for (const definition of commandDefinitionService.list()) {
+    if (definition.status === 'published') commandRegistry.register({ ...definition, status: 'published' })
+  }
+  const shellRunner = new ControlledShellRunner(commandRegistry)
+  const defaults = () => providerRepository.getDefaults()
+  const registries = createCoreWorkflowRegistries({
+    llm: {
+      chat: (modelRef, messages, tools, systemPrompt) => providerRegistry.chat(modelRef, messages, tools, systemPrompt),
+      getDefaultModelRef: () => defaults().defaultLlmModelRef,
+    },
+    retriever: {
+      retrieve: async (query, options) => {
+        const modelRef = options.modelRef ?? defaults().defaultEmbeddingModelRef
+        if (!modelRef) throw new Error('No default embedding model is configured')
+        const connection = providerRepository.getConnection(modelRef.providerId)
+        const embeddingConfig: EmbeddingConfig = connection.kind === 'ollama'
+          ? { source: 'local', providerId: connection.id, localUrl: connection.baseUrl.replace(/\/v1\/?$/i, ''), model: modelRef.modelId }
+          : { source: 'provider', providerId: connection.id, providerBaseUrl: connection.baseUrl, providerEmbeddingEndpoint: connection.embeddingEndpoint, providerApiKey: connection.apiKey, model: modelRef.modelId }
+        const knowledgeBase = await import('./services/knowledge-base')
+        return knowledgeBase.retrieveWorkflowContext(query, embeddingConfig, options.topK, options.collection)
+      },
+    },
+    sql: createSqlService(databaseAdapters),
+    shell: createShellService(shellRunner),
+  })
+  for (const definition of nodeDefinitionService.list()) {
+    if (definition.status === 'published' && !registries.nodes.get(definition.type, definition.version)) {
+      registries.nodes.register({ ...definition, status: 'published' })
+    }
+  }
+  workflowV2Manager = new WorkflowRunManager(database, workflowV2Repository, runRepository, registries)
+}
 
 // 注入 Store 的 IPC 通信
 ipcMain.handle('store:get', (_event, key: string, defaultValue?: unknown) => {
@@ -57,6 +174,87 @@ ipcMain.handle('store:set', (_event, key: string, value: unknown) => {
 ipcMain.handle('store:delete', (_event, key: string) => {
   store.delete(key)
   return true
+})
+
+// Workflow V2 Provider API. Renderer receives summaries only; credentials are
+// written through Electron safeStorage and are never returned by these DTOs.
+ipcMain.handle('provider-v2:list', () => providerRegistry.list())
+ipcMain.handle('provider-v2:save', (_event, payload: { provider: ProviderInput; apiKey?: string }) => {
+  return providerRegistry.save(payload.provider, payload.apiKey)
+})
+ipcMain.handle('provider-v2:delete', (_event, providerId: string) => {
+  providerRegistry.remove(providerId)
+  return true
+})
+ipcMain.handle('provider-v2:test', async (_event, providerId: string) => providerRegistry.test(providerId))
+ipcMain.handle('provider-v2:discover-models', async (_event, providerId: string) => providerRegistry.discoverModels(providerId))
+ipcMain.handle('provider-v2:defaults:get', () => providerRegistry.getDefaults())
+ipcMain.handle('provider-v2:defaults:set', (_event, defaults: ApplicationModelDefaults) => providerRegistry.setDefaults(defaults))
+ipcMain.handle('provider-v2:chat', async (_event, payload: {
+  modelRef: ModelRef
+  messages: Parameters<typeof chatCompletion>[1]
+  systemPrompt?: string
+}) => providerRegistry.chat(payload.modelRef, payload.messages, undefined, payload.systemPrompt))
+ipcMain.handle('provider-v2:embed', async (_event, payload: { modelRef: ModelRef; input: string | string[] }) => {
+  return providerRegistry.embed(payload.modelRef, payload.input)
+})
+
+ipcMain.handle('workflow-v2:node-definitions:list', () => nodeDefinitionService.list())
+ipcMain.handle('workflow-v2:node-definitions:published', () => {
+  const definitions = new Map<string, PublishedNodeDefinition>()
+  createCoreWorkflowRegistries().nodes.listPublished().forEach((definition) => definitions.set(`${definition.type}@${definition.version}`, definition))
+  nodeDefinitionService.list().filter((definition) => definition.status === 'published').forEach((definition) => {
+    definitions.set(`${definition.type}@${definition.version}`, { ...definition, status: 'published' })
+  })
+  return [...definitions.values()]
+})
+ipcMain.handle('workflow-v2:node-definitions:save-draft', (_event, input: Parameters<NodeDefinitionService['saveDraft']>[0]) => nodeDefinitionService.saveDraft(input))
+ipcMain.handle('workflow-v2:node-definitions:test', (_event, input: { type: string; version: number; values: Record<string, unknown> }) => nodeDefinitionService.test(input.type, input.version, input.values))
+ipcMain.handle('workflow-v2:node-definitions:publish', (_event, input: { type: string; version: number }) => {
+  const published = nodeDefinitionService.publish(input.type, input.version)
+  workflowV2Manager?.registerNodeDefinition(published)
+  return published
+})
+ipcMain.handle('workflow-v2:shell-commands:list', () => commandDefinitionService.list())
+ipcMain.handle('workflow-v2:shell-commands:save-draft', (_event, input: Parameters<CommandDefinitionService['saveDraft']>[0]) => commandDefinitionService.saveDraft(input))
+ipcMain.handle('workflow-v2:shell-commands:test', (_event, input: { id: string; args: string[] }) => commandDefinitionService.test(input.id, input.args))
+ipcMain.handle('workflow-v2:shell-commands:publish', (_event, input: { id: string }) => {
+  const published = commandDefinitionService.publish(input.id)
+  workflowV2CommandRegistry?.register(published)
+  return published
+})
+
+ipcMain.handle('workflow-v2:list', () => requireWorkflowV2Repository().listWorkflows())
+ipcMain.handle('workflow-v2:get', (_event, workflowId: string, revision?: number) => requireWorkflowV2Repository().requireRevision(workflowId, revision).definition)
+ipcMain.handle('workflow-v2:save-revision', (_event, raw: unknown) => {
+  const definition = workflowSaveRevisionRequestSchema.parse(raw)
+  const repository = requireWorkflowV2Repository()
+  return repository.getWorkflow(definition.id)
+    ? repository.createRevision(definition).definition
+    : repository.createWorkflow(definition).definition
+})
+ipcMain.handle('workflow-v2:execute', async (event, raw: unknown) => {
+  const request = parseWorkflowExecuteRequest(raw)
+  return requireWorkflowV2Manager().start(request, (workflowEvent) => {
+    if (!event.sender.isDestroyed()) event.sender.send('workflow-v2:event', workflowEvent)
+  })
+})
+ipcMain.handle('workflow-v2:cancel', (_event, raw: unknown) => {
+  const request = parseWorkflowCancelRequest(raw)
+  return requireWorkflowV2Manager().cancel(request.runId)
+})
+ipcMain.handle('workflow-v2:resume-confirmation', async (event, raw: unknown) => {
+  const request = parseWorkflowResumeConfirmationRequest(raw)
+  return requireWorkflowV2Manager().resumeConfirmation(request.confirmationId, request.approved, (workflowEvent) => {
+    if (!event.sender.isDestroyed()) event.sender.send('workflow-v2:event', workflowEvent)
+  })
+})
+ipcMain.handle('workflow-v2:get-run', (_event, runId: string) => requireWorkflowV2Manager().getRun(runId))
+ipcMain.handle('workflow-v2:get-pending-confirmation', (_event, runId: string) => requireWorkflowV2Manager().getPendingConfirmation(runId))
+ipcMain.handle('workflow-v2:runs', (_event, workflowId?: string, limit?: number) => {
+  const repository = requireWorkflowV2Repository()
+  const database = getDatabase() as unknown as SqliteDatabase
+  return new WorkflowRunRepository(database, repository).listRuns(workflowId, limit)
 })
 
 ipcMain.handle('theme:set', (_event, source: 'light' | 'dark' | 'system') => {
@@ -916,24 +1114,33 @@ nativeTheme.themeSource = ['porcelain', 'meadow', 'catppuccin-latte'].includes(S
 
 let win: BrowserWindow | null = null
 let islandWin: BrowserWindow | null = null
+let islandRendererReady = false
 
 // Fix for transparent windows on macOS causing SharedImageManager::ProduceSkia errors
 app.commandLine.appendSwitch('disable-features', 'IOSurfaceCapturer,HardwareMediaKeyHandling')
 app.commandLine.appendSwitch('enable-transparent-visuals')
 
-const shell = os.platform() === 'win32' ? 'powershell.exe' : process.env.SHELL || 'bash'
+// Keep the terminal executable separate from Electron's `shell` module.
+// The latter is used by file actions such as trashing and revealing items in Finder.
+const shellCommand = resolveTerminalShell(process.platform, process.env)
 
-// Fix PATH for macOS packaged apps so terminal commands like 'claude', 'node', 'npm' work.
-if (process.platform === 'darwin' && app.isPackaged) {
+// GUI-launched apps do not always inherit the interactive shell PATH. Resolve
+// it once from the same login shell used by the PTY so commands such as
+// `claude`, `node` and `npm` behave like they do in Terminal.app.
+if (process.platform !== 'win32') {
   try {
-    const userPath = execSync(`${shell} -l -c "echo \\$PATH"`).toString().trim()
-    if (userPath) {
+    const userPath = execFileSync(shellCommand, ['-ilc', 'printf %s "$PATH"'], {
+      encoding: 'utf8',
+      env: process.env,
+    }).trim()
+    if (userPath && userPath.includes('/')) {
       process.env.PATH = userPath
     }
   } catch {
     // Ignored
   }
 }
+process.env.SHELL = shellCommand
 
 // Check if tmux exists
 let hasTmux = false
@@ -947,6 +1154,7 @@ try {
   }
 
 let isQuitting = false;
+let suppressMainActivationUntil = 0;
 
 app.on('before-quit', () => {
   isQuitting = true;
@@ -962,27 +1170,49 @@ const terminalSessionRegistry = createTerminalSessionRegistry()
 const agentSessionStore = createSessionStore()
 let agentHookServer: HookServer | null = null
 let interactionCoordinator: InteractionCoordinator | null = null
+let interactionExpiryTimer: NodeJS.Timeout | null = null
 
 function publishIslandInteraction(interaction: PendingInteraction) {
-  if (!islandWin || islandWin.isDestroyed()) return
+  if (!islandWin || islandWin.isDestroyed() || !islandRendererReady) return
   const terminalSessionName = terminalSessionRegistry.get(interaction.terminalSessionId)?.label ?? interaction.terminalSessionId
   islandWin.showInactive()
   islandWin.webContents.send('island:interaction', { ...interaction, terminalSessionName })
 }
 
 function publishIslandInteractionState(interaction: PendingInteraction) {
-  if (!islandWin || islandWin.isDestroyed()) return
+  if (!islandWin || islandWin.isDestroyed() || !islandRendererReady) return
   const terminalSessionName = terminalSessionRegistry.get(interaction.terminalSessionId)?.label ?? interaction.terminalSessionId
   islandWin.webContents.send('island:interaction-state', { ...interaction, terminalSessionName })
 }
 
+function markIslandRendererReady() {
+  if (!islandWin || islandWin.isDestroyed()) return
+  islandRendererReady = true
+  for (const interaction of agentSessionStore.listPending()) publishIslandInteraction(interaction)
+}
+
 function getAgentHookSocketPath() {
-  return process.platform === 'win32'
-    ? `\\\\.\\pipe\\easy-terminal-${appInstanceId}`
-    : join(app.getPath('temp'), `easy-terminal-${appInstanceId}.sock`)
+  return buildAgentHookSocketPath(appInstanceId, process.platform)
 }
 
 function initializeAgentIntegration() {
+  try {
+    const hook = installClaudeCodeHook({
+      homePath: app.getPath('home'),
+      userDataPath: app.getPath('userData'),
+      platform: process.platform,
+    })
+    console.info(`[AgentIntegration] Claude Code Hook ${hook.changed ? 'installed' : 'ready'}: ${hook.configPath}`)
+  } catch (error) {
+    console.error('[AgentIntegration] Claude Code Hook installation failed:', error)
+  }
+  try {
+    const plugin = installOpenCodePlugin({ homePath: app.getPath('home') })
+    console.info(`[AgentIntegration] OpenCode plugin ${plugin.changed ? 'installed' : 'ready'}: ${plugin.pluginPath}`)
+  } catch (error) {
+    console.error('[AgentIntegration] OpenCode plugin installation failed:', error)
+  }
+
   const adapters = createDefaultAdapters()
   interactionCoordinator = createInteractionCoordinator({
     store: agentSessionStore,
@@ -1014,6 +1244,8 @@ function initializeAgentIntegration() {
     onAck: event => interactionCoordinator?.handleAck(event) ?? { ok: false, code: 'coordinator_unavailable', message: '响应协调器未初始化' },
   })
   void agentHookServer.start().catch(error => console.error('[AgentIntegration] Failed to start Hook Server:', error))
+  interactionExpiryTimer = setInterval(() => interactionCoordinator?.expire(), 1000)
+  interactionExpiryTimer.unref()
 }
 
 function broadcastUIIntent(intent: UIIntent | null) {
@@ -1137,6 +1369,7 @@ function createWindow() {
       // Destroy island window to prevent ghost process
       if (islandWin && !islandWin.isDestroyed()) {
         console.log('Destroying island window');
+        islandRendererReady = false
         islandWin.destroy()
         islandWin = null;
       }
@@ -1146,6 +1379,10 @@ function createWindow() {
         agentSessionStore.cancelForTerminalSession(id)
       }
       void agentHookServer?.stop()
+      if (interactionExpiryTimer) {
+        clearInterval(interactionExpiryTimer)
+        interactionExpiryTimer = null
+      }
       
       // Set quitting flag and trigger actual app quit
       isQuitting = true;
@@ -1189,6 +1426,22 @@ function createWindow() {
   // Enable click-through for transparent areas (macOS supports this well)
   islandWin.setIgnoreMouseEvents(true, { forward: true })
 
+  islandWin.webContents.on('did-finish-load', () => {
+    islandRendererReady = false
+  })
+  islandWin.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    islandRendererReady = false
+    console.error('[AgentIntegration] Island renderer failed to load:', errorCode, errorDescription)
+  })
+  islandWin.webContents.on('render-process-gone', (_event, details) => {
+    islandRendererReady = false
+    console.error('[AgentIntegration] Island renderer exited:', details)
+  })
+  islandWin.on('closed', () => {
+    islandRendererReady = false
+    islandWin = null
+  })
+
   win.webContents.on('render-process-gone', (_e, details) => {
     console.error('win render-process-gone:', details);
   });
@@ -1219,6 +1472,22 @@ let lastShortcutTrigger = 0;
 
 // Helper: build LLMConfig from stored settings
 function buildLLMConfig(providerId?: string, model?: string): LLMConfig | null {
+  const defaultRef = providerRepository.getDefaults().defaultLlmModelRef
+  if (!providerId && !model && defaultRef) {
+    try {
+      const connection = providerRepository.getConnection(defaultRef.providerId)
+      return {
+        provider: connection.id,
+        baseUrl: connection.baseUrl,
+        chatEndpoint: connection.chatEndpoint,
+        apiKey: connection.apiKey,
+        model: defaultRef.modelId,
+        apiFormat: connection.kind === 'anthropic' ? 'anthropic' : 'openai_chat',
+      }
+    } catch {
+      // Fall through to the legacy settings until the Provider V2 entry is fixed.
+    }
+  }
   const providers = store.get('model_providers', []) as Array<{ id: string; baseUrl: string; chatEndpoint?: string; apiKey: string; models: string; icon: string; apiFormat?: string }>;
   const settings = store.get('app_settings') as { reasoningModel?: { providerId: string; model: string } } | null;
 
@@ -1241,6 +1510,23 @@ function buildLLMConfig(providerId?: string, model?: string): LLMConfig | null {
 function buildEmbeddingConfig(): EmbeddingConfig {
   const settings = store.get('app_settings') as { embeddingModel?: EmbeddingConfig } | null;
   const em = settings?.embeddingModel;
+  const defaultRef = providerRepository.getDefaults().defaultEmbeddingModelRef
+  if (defaultRef) {
+    try {
+      const connection = providerRepository.getConnection(defaultRef.providerId)
+      return {
+        source: connection.kind === 'ollama' ? 'local' : 'provider',
+        providerId: connection.id,
+        localUrl: connection.kind === 'ollama' ? connection.baseUrl.replace(/\/v1\/?$/i, '') : undefined,
+        providerBaseUrl: connection.kind === 'ollama' ? undefined : connection.baseUrl,
+        providerEmbeddingEndpoint: connection.embeddingEndpoint,
+        providerApiKey: connection.apiKey,
+        model: defaultRef.modelId,
+      }
+    } catch {
+      // Fall through to the existing application setting.
+    }
+  }
   if (!em) return { source: 'local', localUrl: 'http://localhost:11434', model: '' };
 
   if (em.source === 'local') {
@@ -1251,6 +1537,7 @@ function buildEmbeddingConfig(): EmbeddingConfig {
     const p = providers.find((pr: { id: string }) => pr.id === em.providerId);
     return {
       source: 'provider',
+      providerId: p?.id,
       providerBaseUrl: p?.baseUrl,
       providerEmbeddingEndpoint: p?.embeddingEndpoint,
       providerApiKey: p?.apiKey,
@@ -1286,6 +1573,9 @@ const capabilityRegistry = createDefaultCapabilityRegistry({
     broadcastUIIntent(null);
     return true;
   },
+  listWorkflowV2: () => requireWorkflowV2Repository().listWorkflows(),
+  getWorkflowV2: (workflowId: string) => requireWorkflowV2Repository().requireRevision(workflowId).definition,
+  executeWorkflowV2: (workflowId: string, input: Record<string, unknown>) => requireWorkflowV2Manager().start({ workflowId, input }),
 });
 
 const driftGuard = createDriftGuard();
@@ -1356,72 +1646,6 @@ ipcMain.handle('kb:build-rag-prompt', async (_e, query: string, topK?: number, c
   const kb = await import('./services/knowledge-base');
   const embConfig = buildEmbeddingConfig();
   return kb.buildRAGPrompt(query, embConfig, topK, collection);
-});
-
-// ── Workflow Engine ───────────────────────────────────────────────
-ipcMain.handle('workflow:list', async () => {
-  const we = await import('./services/workflow-engine');
-  return we.listWorkflows();
-});
-ipcMain.handle('workflow:get', async (_e, id: string) => {
-  const we = await import('./services/workflow-engine');
-  return we.getWorkflow(id);
-});
-ipcMain.handle('workflow:create', async (_e, data: { name: string; description?: string; category?: string; tags?: string[] }) => {
-  const we = await import('./services/workflow-engine');
-  return we.createWorkflow(data);
-});
-ipcMain.handle('workflow:update', async (_e, id: string, data: Record<string, unknown>) => {
-  const we = await import('./services/workflow-engine');
-  return we.updateWorkflow(id, data);
-});
-ipcMain.handle('workflow:delete', async (_e, id: string) => {
-  const we = await import('./services/workflow-engine');
-  return we.deleteWorkflow(id);
-});
-ipcMain.handle('workflow:runs', async (_e, workflowId?: string) => {
-  const we = await import('./services/workflow-engine');
-  return we.listWorkflowRuns(workflowId);
-});
-ipcMain.handle('workflow:build-agent-prompt', async (_e, id: string) => {
-  const we = await import('./services/workflow-engine');
-  return we.buildWorkflowAgentPrompt(id);
-});
-ipcMain.handle('workflow:execute', async (_e, id: string, variables?: Record<string, unknown>) => {
-  const we = await import('./services/workflow-engine');
-  const config = buildLLMConfig();
-  if (!config) throw new Error('No reasoning model configured');
-  const embConfig = buildEmbeddingConfig();
-
-  return we.executeWorkflow(id, config, variables, embConfig, {
-    onNodeStart: (node) => {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('workflow:status', {
-          type: 'node_start',
-          nodeId: node.id,
-          nodeType: node.type,
-          nodeLabel: node.label,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    },
-    onNodeComplete: (node) => {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('workflow:status', {
-          type: 'node_complete',
-          nodeId: node.id,
-          nodeType: node.type,
-          nodeLabel: node.label,
-          timestamp: new Date().toISOString(),
-        });
-      }
-    },
-    onLog: (log) => {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('workflow:log', log);
-      }
-    },
-  });
 });
 
 // ── Capability Registry ──────────────────────────────────────────
@@ -1546,6 +1770,19 @@ ipcMain.handle('preference:build-block', () => {
 });
 
 app.whenReady().then(() => {
+  // Migrate the legacy provider list once safeStorage is available. The new
+  // provider API stores only encrypted credentials and safe summaries.
+  try {
+    providerRepository.migrateLegacyProviders(store.get('model_providers', []))
+  } catch (error) {
+    console.warn('[Provider V2] legacy provider migration skipped:', error instanceof Error ? error.message : error)
+  }
+  try {
+    initializeWorkflowV2Runtime()
+  } catch (error) {
+    console.error('[Workflow V2] runtime initialization failed:', error)
+  }
+
   // Always ensure dock is visible
   if (process.platform === 'darwin' && app.dock) {
     app.dock.show();
@@ -1748,7 +1985,7 @@ app.whenReady().then(() => {
   ipcMain.on('pty:create', (event, id) => {
     if (terminals[id]) return
 
-    let command = shell
+    let command = shellCommand
     let args: string[] = []
     const tmuxSessionName = hasTmux ? getTmuxSessionName(id) : undefined
     const registration = terminalSessionRegistry.register({
@@ -1761,7 +1998,9 @@ app.whenReady().then(() => {
     if (hasTmux) {
       // Use tmux to create or attach to a session
       command = 'tmux'
-      args = ['new-session', '-A', '-s', tmuxSessionName as string]
+      // Pass the shell explicitly for newly created sessions. Otherwise tmux
+      // may use /bin/sh or a stale default-shell and hide the user's CLI PATH.
+      args = ['new-session', '-A', '-s', tmuxSessionName as string, shellCommand, '-l']
       // tmux servers can outlive a tab. Refresh the session-scoped identity
       // before attaching so an old token cannot remain trusted.
       for (const [key, value] of Object.entries({
@@ -1787,7 +2026,7 @@ app.whenReady().then(() => {
       cols: 80,
       rows: 30,
       cwd: currentCwd,
-      env: buildAgentEnvironment(process.env, registration, getAgentHookSocketPath())
+      env: buildAgentEnvironment(process.env, registration, getAgentHookSocketPath(), shellCommand)
     })
     terminalSessionRegistry.attachPty(id, ptyProcess)
 
@@ -2529,6 +2768,63 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
     }
   })
 
+  ipcMain.handle('fs:show-in-finder', async (_event, targetPath: string, isDirectory = false) => {
+    try {
+      const fullPath = resolve(targetPath)
+      if (!fs.existsSync(fullPath)) return { ok: false, error: '项目不存在。' }
+      if (isDirectory) {
+        const error = await shell.openPath(fullPath)
+        return error ? { ok: false, error } : { ok: true }
+      }
+      shell.showItemInFolder(fullPath)
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : '无法在 Finder 中打开。' }
+    }
+  })
+
+  ipcMain.handle('fs:open-default', async (_event, targetPath: string) => {
+    try {
+      const fullPath = resolve(targetPath)
+      if (!fs.existsSync(fullPath)) return { ok: false, error: '文件不存在。' }
+      const error = await shell.openPath(fullPath)
+      return error ? { ok: false, error } : { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : '系统无法打开该文件。' }
+    }
+  })
+
+  ipcMain.handle('fs:open-with', async (event, targetPath: string) => {
+    try {
+      const fullPath = resolve(targetPath)
+      if (!fs.existsSync(fullPath)) return { ok: false, error: '项目不存在。' }
+      const properties: Array<'openFile' | 'openDirectory'> = process.platform === 'darwin'
+        ? ['openFile', 'openDirectory']
+        : ['openFile']
+      const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender) || undefined, {
+        title: '选择打开方式',
+        defaultPath: process.platform === 'darwin' ? '/Applications' : undefined,
+        properties,
+      })
+      const applicationPath = result.filePaths[0]
+      if (result.canceled || !applicationPath) return { ok: false, canceled: true }
+
+      const command = process.platform === 'darwin' ? 'open' : applicationPath
+      const args = process.platform === 'darwin' ? ['-a', applicationPath, fullPath] : [fullPath]
+      await new Promise<void>((resolvePromise, reject) => {
+        const child = spawn(command, args, { detached: true, stdio: 'ignore' })
+        child.once('error', reject)
+        child.once('spawn', () => {
+          child.unref()
+          resolvePromise()
+        })
+      })
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : '无法使用所选应用打开。' }
+    }
+  })
+
   ipcMain.handle('fs:stat', async (_event, targetPath: string) => {
     try {
       const stat = fs.statSync(targetPath)
@@ -2696,7 +2992,7 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
 
   // ── Browser (Workflow) ─────────────────────────────────────────────
   ipcMain.handle('workflow:browser-execute', async (_event, options: { url: string; script: string; timeout?: number }) => {
-    return workflowEngine.executeBrowserScript(options);
+    return executeBrowserScript(options);
   });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -2715,10 +3011,16 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
     return interactionCoordinator.submit(response)
   })
 
+  ipcMain.on('island:ready', event => {
+    if (!islandWin || event.sender !== islandWin.webContents) return
+    markIslandRendererReady()
+  })
+
   ipcMain.handle('island:set-interactive', (event, request: { interactionId: string; interactive: boolean; reason: 'composer-focus' | 'composer-blur' | 'action-complete' }) => {
     if (!islandWin || event.sender !== islandWin.webContents) return { ok: false, code: 'forbidden' }
     if (!request?.interactionId || typeof request.interactive !== 'boolean') return { ok: false, code: 'invalid_request' }
     if (request.interactive) {
+      suppressMainActivationUntil = Date.now() + 1500;
       islandWin.setIgnoreMouseEvents(false)
       islandWin.setFocusable(true)
       islandWin.show()
@@ -2735,6 +3037,7 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
     const registration = terminalSessionRegistry.get(terminalSessionId)
     if (!registration || !registration.alive) return { ok: false, code: 'session_closed' }
     if (win && !win.isDestroyed()) {
+      suppressMainActivationUntil = 0
       win.show()
       win.focus()
       win.webContents.send('terminal:focus-session', terminalSessionId)
@@ -2753,6 +3056,7 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
 
   ipcMain.on('island:set-ignore-mouse-events', (_event, ignore: boolean) => {
     if (islandWin) {
+      if (!ignore) suppressMainActivationUntil = Date.now() + 1500
       islandWin.setIgnoreMouseEvents(ignore, { forward: true })
     }
   })
@@ -2803,10 +3107,14 @@ ipcMain.handle('context:analyze', async (_event, content: string) => {
 
     if (type === 'file' && contextData) {
       template.push(
+        { label: '复制', click: () => event.reply('menu:action', 'copy-name', contextData) },
         { label: '复制路径 (Copy Path)', click: () => event.reply('menu:action', 'copy-path', contextData) },
-        { label: '插入终端 (Insert Path)', click: () => event.reply('menu:action', 'insert-path', contextData) }
+        { label: '插入终端 (Insert Path)', click: () => event.reply('menu:action', 'insert-path', contextData) },
+        { type: 'separator' },
+        { label: contextData.isDirectory ? '在 Finder 中打开' : '在 Finder 中显示', click: () => event.reply('menu:action', 'show-in-finder', contextData) },
+        { label: '选择打开方式…', click: () => event.reply('menu:action', 'open-with', contextData) }
       )
-      if (!contextData.isDirectory) {
+      if (contextData.isDirectory === false) {
         template.push(
           { label: '编辑文件 (Edit File)', click: () => event.reply('menu:action', 'edit-file', contextData) }
         )
@@ -2842,6 +3150,11 @@ app.on('window-all-closed', () => {
 })
 
 app.on('activate', () => {
+  if (suppressMainActivationUntil > Date.now()) {
+    suppressMainActivationUntil = 0
+    return
+  }
+  suppressMainActivationUntil = 0
   if (win === null) {
     createWindow()
   } else {

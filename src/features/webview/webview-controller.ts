@@ -59,6 +59,9 @@ function readFailEvent(event: unknown) {
 }
 
 export function bindWebviewController(webview: WebviewLike, handlers: WebviewControllerHandlers): () => void {
+  let mainFrameFailed = false;
+  let hasReadyState = false;
+
   const getUrl = () => {
     try { return webview.getURL() || ''; } catch { return ''; }
   };
@@ -77,17 +80,34 @@ export function bindWebviewController(webview: WebviewLike, handlers: WebviewCon
     handlers.onNavigation?.(getUrl(), canGoBack, canGoForward);
   };
 
-  const onStartLoading = () => handlers.onState({ kind: 'loading', url: getUrl() });
-  const onStopLoading = () => syncNavigation();
-  const onFinishLoad = () => {
+  const onStartLoading = () => {
+    mainFrameFailed = false;
+    hasReadyState = false;
+    handlers.onState({ kind: 'loading', url: getUrl() });
+  };
+  const emitReady = () => {
+    if (mainFrameFailed || hasReadyState) return;
+    hasReadyState = true;
     const url = getUrl();
-    handlers.onState({ kind: 'ready', url, title: getTitle() });
-    handlers.onTitle?.(getTitle());
+    const title = getTitle();
+    handlers.onState({ kind: 'ready', url, title });
+    handlers.onTitle?.(title);
+  };
+  // Some pages can finish rendering while did-finish-load is missed or delayed.
+  // did-stop-loading and dom-ready are lifecycle fallbacks for clearing the overlay.
+  const onStopLoading = () => {
+    emitReady();
+    syncNavigation();
+  };
+  const onFinishLoad = () => {
+    emitReady();
     syncNavigation();
   };
   const onFailLoad = (event: unknown) => {
     const failure = readFailEvent(event);
     if (!failure.isMainFrame || failure.code === -3) return;
+    mainFrameFailed = true;
+    hasReadyState = false;
     handlers.onState({
       kind: 'error',
       url: getUrl(),
@@ -102,13 +122,18 @@ export function bindWebviewController(webview: WebviewLike, handlers: WebviewCon
   const onTitleUpdated = () => handlers.onTitle?.(getTitle());
   const onRenderProcessGone = (event: unknown) => {
     const value = (event || {}) as { reason?: unknown };
+    mainFrameFailed = true;
+    hasReadyState = false;
     handlers.onState({ kind: 'crashed', reason: typeof value.reason === 'string' ? value.reason : '网页进程意外退出。' });
   };
   const onIpcMessage = (event: unknown) => {
     const value = (event || {}) as { channel?: unknown; args?: unknown[] };
     if (typeof value.channel === 'string') handlers.onMessage?.({ channel: value.channel, args: value.args || [] });
   };
-  const onDomReady = () => handlers.onDomReady?.();
+  const onDomReady = () => {
+    emitReady();
+    handlers.onDomReady?.();
+  };
 
   const listeners: Array<[string, (event: unknown) => void]> = [
     ['did-start-loading', onStartLoading],
@@ -128,10 +153,14 @@ export function bindWebviewController(webview: WebviewLike, handlers: WebviewCon
     let initialLoading = true;
     try { initialLoading = webview.isLoading ? webview.isLoading() : true; } catch { /* guest may still be attaching */ }
     if (initialLoading) {
+      mainFrameFailed = false;
+      hasReadyState = false;
       handlers.onState({ kind: 'loading', url: initialUrl });
     } else {
-      handlers.onState({ kind: 'ready', url: initialUrl, title: getTitle() });
-      handlers.onTitle?.(getTitle());
+      hasReadyState = true;
+      const title = getTitle();
+      handlers.onState({ kind: 'ready', url: initialUrl, title });
+      handlers.onTitle?.(title);
       syncNavigation();
     }
   }

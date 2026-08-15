@@ -27,6 +27,25 @@ interface ElectronAPI {
   'search:unified': (query: string, modules?: string[], topK?: number) => Promise<UnifiedSearchResponse>
   // Workflow Browser
   'workflow:browser-execute': (options: { url: string; script: string; timeout?: number }) => Promise<string>
+  workflowV2: {
+    list: () => Promise<Array<{ id: string; name: string; description: string; latestRevision: number; status: string; createdAt: string; updatedAt: string }>>
+    get: (workflowId: string, revision?: number) => Promise<unknown>
+    saveRevision: (definition: unknown) => Promise<unknown>
+    execute: (request: unknown) => Promise<{ runId: string; workflowId: string; revision: number }>
+    cancel: (runId: string) => Promise<unknown>
+    resumeConfirmation: (confirmationId: string, approved: boolean) => Promise<unknown>
+    getRun: (runId: string) => Promise<unknown>
+    listRuns: (workflowId?: string, limit?: number) => Promise<unknown>
+    getPendingConfirmation: (runId: string) => Promise<unknown>
+    listDefinitions: () => Promise<unknown>
+    onEvent: (handler: (event: unknown) => void) => () => void
+    shellCommands: {
+      list: () => Promise<unknown>
+      saveDraft: (input: unknown) => Promise<unknown>
+      test: (input: unknown) => Promise<unknown>
+      publish: (input: unknown) => Promise<unknown>
+    }
+  }
 }
 
 interface InteractionResponseRequest {

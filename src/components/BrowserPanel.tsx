@@ -35,10 +35,13 @@ export function BrowserPanel({ onSendToTerminal }: { onSendToTerminal?: (value: 
   const [contextSaved, setContextSaved] = useState(false);
   const [selectedText, setSelectedText] = useState('');
   const [preloadPath, setPreloadPath] = useState<string>('');
+  const [documentReady, setDocumentReady] = useState(false);
   const contextSavedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const webviewRef = useRef<any>(null);
-  const loading = loadState.kind === 'booting' || loadState.kind === 'loading';
+  // A page can remain busy with background resources after its document is
+  // already interactive. Only show loading chrome before the document is ready.
+  const loading = loadState.kind === 'booting' || (loadState.kind === 'loading' && !documentReady);
 
   // ── Plugin State ─────────────────────────────────────────────────
   const [plugins, setPlugins] = useState<BrowserPlugin[]>([]);
@@ -159,9 +162,11 @@ export function BrowserPanel({ onSendToTerminal }: { onSendToTerminal?: (value: 
       const finalUrl = normalizeWebUrl(targetUrl);
       setInputUrl(finalUrl);
       setUrl(finalUrl);
+      setDocumentReady(false);
       setLoadState({ kind: 'loading', url: finalUrl });
       await webviewRef.current.loadURL(finalUrl);
     } catch (error) {
+      setDocumentReady(false);
       const message = error instanceof Error ? error.message : '无法加载地址。';
       setLoadState({ kind: 'error', url: targetUrl, code: -1, description: message });
     }
@@ -169,18 +174,21 @@ export function BrowserPanel({ onSendToTerminal }: { onSendToTerminal?: (value: 
 
   const handleBack = useCallback(() => {
     if (webviewRef.current?.canGoBack()) {
+      setDocumentReady(false);
       webviewRef.current.goBack();
     }
   }, []);
 
   const handleForward = useCallback(() => {
     if (webviewRef.current?.canGoForward()) {
+      setDocumentReady(false);
       webviewRef.current.goForward();
     }
   }, []);
 
   const handleRefresh = useCallback(() => {
     if (webviewRef.current) {
+      setDocumentReady(false);
       webviewRef.current.reload();
     }
   }, []);
@@ -198,6 +206,8 @@ export function BrowserPanel({ onSendToTerminal }: { onSendToTerminal?: (value: 
     return bindWebviewController(wv, {
       onState: nextState => {
         setLoadState(nextState);
+        if (nextState.kind === 'error' || nextState.kind === 'crashed') setDocumentReady(false);
+        if (nextState.kind === 'ready') setDocumentReady(true);
         if (nextState.kind === 'ready') {
           syncInputUrl(nextState.url);
           setTitle(nextState.title);
@@ -212,6 +222,7 @@ export function BrowserPanel({ onSendToTerminal }: { onSendToTerminal?: (value: 
         setCanGoForward(nextCanGoForward);
       },
       onTitle: nextTitle => setTitle(nextTitle),
+      onDomReady: () => setDocumentReady(true),
       onMessage: message => {
         if (message.channel === 'browser-selection') {
           const value = message.args[0] as { text?: unknown } | undefined;
@@ -383,16 +394,6 @@ export function BrowserPanel({ onSendToTerminal }: { onSendToTerminal?: (value: 
               <div className="font-medium">网页进程已崩溃</div>
               <div className="mt-2 text-xs text-[var(--text-secondary)]">原因：{loadState.reason}</div>
               <button type="button" onClick={() => void handleNavigate(url)} className="mt-4 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs text-white">重新加载</button>
-            </div>
-          </div>
-        )}
-
-        {/* Loading Overlay */}
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/30 backdrop-blur-sm pointer-events-none">
-            <div className="flex flex-col items-center gap-2">
-              <Loader2 size={28} className="text-[var(--accent)] animate-spin" />
-              <span className="text-[11px] text-[var(--text-secondary)]">正在加载...</span>
             </div>
           </div>
         )}

@@ -1,0 +1,16 @@
+import { useState } from 'react'
+import { Braces, Settings2 } from 'lucide-react'
+import type { WorkflowNodeDTO } from '../domain/types'
+
+interface NodeInspectorProps { node: WorkflowNodeDTO | null; onChange: (node: WorkflowNodeDTO) => void }
+
+export function NodeInspector({ node, onChange }: NodeInspectorProps) {
+  const [configText, setConfigText] = useState(() => JSON.stringify(node?.config ?? {}, null, 2))
+  const [error, setError] = useState<string | null>(null)
+
+  if (!node) return <aside className="flex w-64 shrink-0 flex-col border-l border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-muted)_32%,transparent)] p-5"><div className="flex h-full flex-col items-center justify-center text-center"><div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[var(--surface-strong)] text-[var(--text-secondary)]"><Settings2 size={18} /></div><h3 className="mt-3 text-sm font-semibold text-[var(--text-primary)]">节点配置</h3><p className="mt-1 max-w-[12rem] text-[11px] leading-5 text-[var(--text-secondary)]">选择画布中的节点，在这里设置标签、提示词和运行参数。</p></div></aside>
+  const applyConfig = () => {
+    try { onChange({ ...node, config: JSON.parse(configText) as Record<string, unknown> }); setError(null) } catch { setError('配置必须是合法 JSON') }
+  }
+  return <aside className="flex w-64 shrink-0 flex-col overflow-y-auto border-l border-[var(--panel-border)] bg-[color:color-mix(in_srgb,var(--surface-muted)_32%,transparent)] p-5"><div className="flex items-start gap-3"><div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)]/12 text-[var(--accent)]"><Settings2 size={16} /></div><div className="min-w-0"><h3 className="text-sm font-semibold text-[var(--text-primary)]">节点配置</h3><p className="mt-1 truncate font-mono text-[10px] text-[var(--text-secondary)]">{node.type}@{node.version}</p></div></div><div className="mt-5 border-t border-[var(--panel-border)] pt-4"><label className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-secondary)]">标签<input value={String(node.config.label ?? '')} onChange={(event) => onChange({ ...node, config: { ...node.config, label: event.target.value } })} placeholder="给节点起一个易懂的名字" className="mt-2 h-9 w-full rounded-lg border border-[var(--panel-border)] bg-[var(--surface-strong)] px-3 text-xs text-[var(--text-primary)] outline-none transition-colors placeholder:text-[var(--text-secondary)] focus:border-[var(--panel-border-glow)]" /></label><label className="mt-5 block text-[10px] font-semibold uppercase tracking-[0.14em] text-[var(--text-secondary)]"><span className="flex items-center gap-1.5"><Braces size={12} />配置 JSON</span><textarea value={configText} onChange={(event) => setConfigText(event.target.value)} onBlur={applyConfig} className="mt-2 h-56 w-full resize-y rounded-lg border border-[var(--panel-border)] bg-[var(--surface-strong)] p-3 font-mono text-[10px] leading-5 text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--panel-border-glow)]" spellCheck={false} /></label>{error && <p className="mt-2 rounded-lg bg-red-500/10 px-2.5 py-2 text-[10px] text-red-300">{error}</p>}<p className="mt-3 text-[10px] leading-5 text-[var(--text-secondary)]">修改 JSON 后点击其他区域应用。保存修订时，配置会随工作流一起保存。</p></div></aside>
+}

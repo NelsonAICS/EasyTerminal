@@ -6,6 +6,8 @@
 import Database from 'better-sqlite3';
 import { join } from 'node:path';
 import { app } from 'electron';
+import { initializeWorkflowV2Tables } from './workflow-v2/schema';
+import type { SqliteDatabase } from './workflow-v2/sqlite';
 
 let db: Database.Database | null = null;
 
@@ -79,6 +81,23 @@ function initializeTables(db: Database.Database) {
       FOREIGN KEY (doc_id) REFERENCES knowledge_docs(id) ON DELETE CASCADE
     );
     CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON knowledge_chunks(doc_id);
+
+    -- Embedding index identity and resumable build state. A collection can
+    -- only be queried when its provider/model/dimensions still match.
+    CREATE TABLE IF NOT EXISTS knowledge_index_states (
+      collection TEXT PRIMARY KEY,
+      provider_id TEXT NOT NULL,
+      model_id TEXT NOT NULL,
+      dimensions INTEGER,
+      index_version INTEGER NOT NULL DEFAULT 1,
+      content_hash TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'parsing',
+      total_chunks INTEGER NOT NULL DEFAULT 0,
+      embedded_chunks INTEGER NOT NULL DEFAULT 0,
+      failed_chunks INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
 
     -- Workflows
     CREATE TABLE IF NOT EXISTS workflows (
@@ -217,6 +236,11 @@ function initializeTables(db: Database.Database) {
 
   ensureColumn(db, 'workflows', 'category', "TEXT DEFAULT 'general'");
   ensureColumn(db, 'workflows', 'tags', "TEXT DEFAULT '[]'");
+
+  // Workflow V2 is intentionally stored in separate tables. The legacy
+  // workflows/workflow_runs tables remain available to existing features and
+  // are not migrated implicitly.
+  initializeWorkflowV2Tables(db as unknown as SqliteDatabase);
 }
 
 function ensureColumn(db: Database.Database, table: string, column: string, definition: string) {

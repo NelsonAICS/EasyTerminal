@@ -27,6 +27,7 @@ const isInteraction = (item: QueueItem): item is PendingInteraction => item.kind
 
 export default function Island() {
   const [expanded, setExpanded] = useState(false)
+  const [displayVisible, setDisplayVisible] = useState(true)
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [currentIndex, setCurrentIndex] = useState(0)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -35,6 +36,7 @@ export default function Island() {
   const [interactive, setInteractive] = useState(false)
   const queueRef = useRef(queue)
   const currentIndexRef = useRef(currentIndex)
+  const dismissedInteractionIds = useRef(new Set<string>())
 
   useEffect(() => { queueRef.current = queue }, [queue])
   useEffect(() => { currentIndexRef.current = currentIndex }, [currentIndex])
@@ -44,6 +46,7 @@ export default function Island() {
   const pendingCount = queue.filter(item => isInteraction(item) && !['acknowledged', 'cancelled'].includes(item.status)).length
 
   const setInteraction = (next: PendingInteraction) => {
+    if (dismissedInteractionIds.current.has(next.interactionId)) return
     setQueue(items => {
       const index = items.findIndex(item => isInteraction(item) && item.interactionId === next.interactionId)
       if (index < 0) return [...items, next]
@@ -53,7 +56,13 @@ export default function Island() {
     })
   }
 
-  const removeNotice = (id: string) => setQueue(items => items.filter(item => isInteraction(item) || item.id !== id))
+  const removeNotice = (id: string) => {
+    setQueue(items => items.filter(item => isInteraction(item) || item.id !== id))
+    if (current && !isInteraction(current) && current.id === id) {
+      setExpanded(false)
+      setDisplayVisible(false)
+    }
+  }
 
   useEffect(() => {
     if (!ipcRenderer) return
@@ -61,7 +70,9 @@ export default function Island() {
     const handleInteraction = (_event: unknown, input: unknown) => {
       const interaction = input as PendingInteraction
       if (!interaction || typeof interaction.interactionId !== 'string') return
+      if (dismissedInteractionIds.current.has(interaction.interactionId)) return
       setInteraction(interaction)
+      setDisplayVisible(true)
       setExpanded(true)
       setCurrentIndex(() => {
         const existing = queueRef.current.findIndex(item => isInteraction(item) && item.interactionId === interaction.interactionId)
@@ -72,6 +83,7 @@ export default function Island() {
     const handleInteractionState = (_event: unknown, input: unknown) => {
       const interaction = input as PendingInteraction
       if (!interaction || typeof interaction.interactionId !== 'string') return
+      if (dismissedInteractionIds.current.has(interaction.interactionId)) return
       setInteraction(interaction)
       if (interaction.status === 'acknowledged') {
         setDrafts(previous => {
@@ -80,8 +92,15 @@ export default function Island() {
           return next
         })
         window.setTimeout(() => {
-          setQueue(items => items.filter(item => !isInteraction(item) || item.interactionId !== interaction.interactionId))
-          setCurrentIndex(index => Math.max(0, Math.min(index, queueRef.current.length - 2)))
+          const nextQueue = queueRef.current.filter(item => !isInteraction(item) || item.interactionId !== interaction.interactionId)
+          if (nextQueue.length === 0) {
+            setExpanded(false)
+            setDisplayVisible(false)
+            setInteractive(false)
+          } else {
+            setCurrentIndex(index => Math.max(0, Math.min(index, nextQueue.length - 1)))
+          }
+          setQueue(nextQueue)
         }, 180)
       }
     }
@@ -91,6 +110,7 @@ export default function Island() {
       const notice: LegacyNotice = { id: `notice-${Date.now()}-${Math.random()}`, title, detail, sessionId: 'system', kind: 'notice' }
       setQueue(items => [...items.filter(item => item.kind !== 'notice'), notice])
       setCurrentIndex(0)
+      setDisplayVisible(true)
       setExpanded(true)
     }
 
@@ -108,6 +128,7 @@ export default function Island() {
     ipcRenderer.on('island:show', handleShow)
     ipcRenderer.on('island:status', handleStatus)
     ipcRenderer.on('island:prompt', handleLegacyPrompt)
+    ipcRenderer.send('island:ready')
     return () => {
       ipcRenderer.removeListener('island:interaction', handleInteraction)
       ipcRenderer.removeListener('island:interaction-state', handleInteractionState)
@@ -138,7 +159,7 @@ export default function Island() {
     }
     setLastResponses(previous => ({ ...previous, [currentInteraction.interactionId]: { action, ...(value !== undefined ? { value } : {}), ...(reason !== undefined ? { reason } : {}) } }))
     const result = await ipcRenderer.invoke('island:interaction-response', response) as { ok?: boolean; interaction?: PendingInteraction }
-    if (result?.interaction) setInteraction(result.interaction)
+    if (result?.interaction && !dismissedInteractionIds.current.has(result.interaction.interactionId)) setInteraction(result.interaction)
     if (result?.ok) {
       await setInteractiveState(false, 'action-complete')
     }
@@ -156,10 +177,36 @@ export default function Island() {
     setExpanded(value => !value)
   }
 
-  const closeDisplay = useCallback(() => {
+  const collapseDisplay = useCallback(() => {
     setExpanded(false)
     void setInteractiveState(false, 'action-complete')
   }, [setInteractiveState])
+
+  const dismissDisplay = () => {
+    if (!current) {
+      setExpanded(false)
+      setDisplayVisible(false)
+      void setInteractiveState(false, 'action-complete')
+      return
+    }
+    if (isInteraction(current)) {
+      dismissedInteractionIds.current.add(current.interactionId)
+      if (['pending', 'failed'].includes(current.status) && current.capabilities.includes('jump_to_terminal')) {
+        // Release a blocking Hook without opening/focusing the main window.
+        void submit('jump_to_terminal')
+      }
+      setDrafts(previous => {
+        const next = { ...previous }
+        delete next[current.interactionId]
+        return next
+      })
+    }
+    setQueue(items => items.filter(item => isInteraction(item) ? item.interactionId !== (isInteraction(current) ? current.interactionId : '') : item.id !== (current as LegacyNotice).id))
+    setCurrentIndex(index => Math.max(0, Math.min(index, Math.max(0, queue.length - 2))))
+    setExpanded(false)
+    setDisplayVisible(false)
+    void setInteractiveState(false, 'action-complete')
+  }
 
   const moveQueue = useCallback((delta: number) => {
     setCurrentIndex(index => Math.max(0, Math.min(queue.length - 1, index + delta)))
@@ -187,11 +234,11 @@ export default function Island() {
       if (!expanded || interactive) return
       if (event.key === 'ArrowDown' || event.key.toLowerCase() === 'j') { event.preventDefault(); moveQueue(1); return }
       if (event.key === 'ArrowUp' || event.key.toLowerCase() === 'k') { event.preventDefault(); moveQueue(-1); return }
-      if (event.key === 'Escape') { event.preventDefault(); closeDisplay() }
+      if (event.key === 'Escape') { event.preventDefault(); collapseDisplay() }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [expanded, interactive, queue.length, closeDisplay, moveQueue])
+  }, [expanded, interactive, queue.length, collapseDisplay, moveQueue])
 
   const card = current && isInteraction(current) ? (
     current.kind === 'permission' ? <PermissionCard key={current.interactionId} interaction={current} ipc={ipcRenderer} draft={drafts[current.interactionId] || ''} onDraftChange={value => setDrafts(previous => ({ ...previous, [current.interactionId]: value }))} onAction={(action, reason) => void submit(action, undefined, reason)} />
@@ -200,15 +247,17 @@ export default function Island() {
           : <QuickReplyCard key={current.interactionId} interaction={current} ipc={ipcRenderer} draft={drafts[current.interactionId] || ''} onDraftChange={value => setDrafts(previous => ({ ...previous, [current.interactionId]: value }))} onAction={(action, value) => void submit(action, value)} />
   ) : current ? <section className="island-card" aria-label="通知"><h2>{current.title}</h2><p className="island-detail">{current.detail}</p><button type="button" className="island-button island-button-primary" onClick={() => removeNotice(current.id)}>关闭</button></section> : null
 
+  if (!displayVisible) return null
+
   return <div className="island-root" onDragEnter={event => { event.preventDefault(); setDragOver(true) }} onDragOver={event => event.preventDefault()} onDragLeave={() => setDragOver(false)} onDrop={handleDrop}>
     <IslandShell expanded={expanded} interactive={interactive || dragOver} onClick={handleShellClick} onMouseEnter={() => ipcRenderer?.send('island:set-ignore-mouse-events', false)} onMouseLeave={() => { if (!interactive) ipcRenderer?.send('island:set-ignore-mouse-events', true) }}>
       {expanded && current ? <>
-        {isInteraction(current) && <InteractionHeader interaction={current} index={currentIndex} total={queue.length} />}
-        {!isInteraction(current) && <div className="island-header"><strong>{current.title}</strong><span>{currentPosition}</span></div>}
+        {isInteraction(current) && <InteractionHeader interaction={current} index={currentIndex} total={queue.length} onCollapse={collapseDisplay} onClose={dismissDisplay} />}
+        {!isInteraction(current) && <div className="island-header"><strong>{current.title}</strong><span>{currentPosition}</span><div className="island-window-controls" data-interactive-target="true"><button type="button" className="island-window-control" aria-label="收起灵动岛" onClick={collapseDisplay}>−</button><button type="button" className="island-window-control island-window-control-close" aria-label="关闭灵动岛" onClick={dismissDisplay}>×</button></div></div>}
         {card}
-        {isInteraction(current) && <InteractionActionBar interaction={current} ipc={ipcRenderer} onRetry={() => void retry()} onAction={action => { if (action === 'jump_to_terminal') closeDisplay() }} />}
+        {isInteraction(current) && <InteractionActionBar interaction={current} ipc={ipcRenderer} onRetry={() => void retry()} onAction={action => { if (action === 'jump_to_terminal') { void submit(action); collapseDisplay() } }} />}
         {queue.length > 1 && <div className="island-footer island-queue-nav"><button type="button" className="island-button island-button-quiet" disabled={currentIndex === 0} onClick={() => moveQueue(-1)}>上一项</button><span>{pendingCount} 项待处理</span><button type="button" className="island-button island-button-quiet" disabled={currentIndex === queue.length - 1} onClick={() => moveQueue(1)}>下一项</button></div>}
-      </> : <button type="button" className="island-collapsed-status" onClick={() => setExpanded(true)}><span className="island-status-dot" />{currentInteraction ? `${currentInteraction.agentType} · ${currentInteraction.terminalSessionId}` : 'EasyTerminal'}{pendingCount > 0 && <b>{pendingCount}</b>}</button>}
+      </> : <div className="island-collapsed-status" role="button" tabIndex={0} aria-label="展开灵动岛" onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(true) } }}><span className="island-status-dot" /><span className="island-collapsed-label">{currentInteraction ? `${currentInteraction.agentType} · ${currentInteraction.terminalSessionId}` : 'EasyTerminal'}</span>{pendingCount > 0 && <b>{pendingCount}</b>}<button type="button" className="island-collapsed-close" aria-label="关闭灵动岛" onClick={event => { event.stopPropagation(); dismissDisplay() }}>×</button></div>}
     </IslandShell>
   </div>
 }

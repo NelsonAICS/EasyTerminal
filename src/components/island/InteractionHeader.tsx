@@ -2,7 +2,7 @@ import { CheckCircle2, CircleAlert, CircleDot, ShieldCheck } from 'lucide-react'
 import type { IslandInteraction } from './island-types'
 import { kindLabel, sourceLabel } from './island-types'
 
-export function InteractionHeader({ interaction, index, total }: { interaction: IslandInteraction; index: number; total: number }) {
+export function InteractionHeader({ interaction, index, total, onCollapse, onClose }: { interaction: IslandInteraction; index: number; total: number; onCollapse?: () => void; onClose?: () => void }) {
   const statusIcon = interaction.status === 'failed' || interaction.status === 'expired'
     ? <CircleAlert size={15} className="text-amber-300" />
     : interaction.status === 'acknowledged'
@@ -25,6 +25,10 @@ export function InteractionHeader({ interaction, index, total }: { interaction: 
         {total > 1 && <span className="island-queue-count">{index + 1}/{total}</span>}
       </div>
       <div className="island-kind-label">{kindLabel(interaction.kind)}</div>
+      {(onCollapse || onClose) && <div className="island-window-controls" data-interactive-target="true">
+        {onCollapse && <button type="button" className="island-window-control" aria-label="收起灵动岛" onClick={onCollapse}>−</button>}
+        {onClose && <button type="button" className="island-window-control island-window-control-close" aria-label="关闭灵动岛" onClick={onClose}>×</button>}
+      </div>}
     </header>
   )
 }

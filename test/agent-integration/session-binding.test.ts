@@ -4,7 +4,7 @@ import {
   createInstanceId,
   createTerminalSessionRegistry,
 } from '../../electron/agent-integration/terminal-session-registry'
-import { buildAgentEnvironment, getTmuxSessionName } from '../../electron/agent-integration/pty-environment'
+import { buildAgentEnvironment, buildAgentHookSocketPath, getTmuxSessionName, resolveTerminalShell } from '../../electron/agent-integration/pty-environment'
 
 describe('EasyTerminal terminal session identity', () => {
   it('ISL-BIND-001 creates unique identity material for a tab', () => {
@@ -61,5 +61,30 @@ describe('EasyTerminal terminal session identity', () => {
       EASYTERMINAL_INSTANCE_ID: 'instance-A',
     })
     expect(environment.EMPTY).toBeUndefined()
+  })
+
+  it('uses zsh when a GUI-launched macOS process has no SHELL', () => {
+    expect(resolveTerminalShell('darwin', {})).toBe('/bin/zsh')
+    expect(resolveTerminalShell('darwin', { SHELL: '/custom/zsh' })).toBe('/custom/zsh')
+    expect(resolveTerminalShell('win32', {})).toBe('powershell.exe')
+  })
+
+  it('pins the PTY SHELL when the resolved shell is explicit', () => {
+    const registration = {
+      terminalSessionId: 'tab-A',
+      channelToken: createChannelToken(),
+      instanceId: 'instance-A',
+    }
+    const environment = buildAgentEnvironment({ SHELL: '/bin/bash' }, registration, '/tmp/easy.sock', '/bin/zsh')
+    expect(environment.SHELL).toBe('/bin/zsh')
+  })
+
+  it('keeps the macOS hook socket path below the Unix socket limit', () => {
+    const socketPath = buildAgentHookSocketPath(
+      'easy-instance-cedd96c1-c39d-4175-b4d6-67dec83ec286',
+      'darwin',
+    )
+    expect(socketPath).toMatch(/^\/tmp\/et-[0-9a-f]{16}\.sock$/)
+    expect(Buffer.byteLength(socketPath)).toBeLessThan(104)
   })
 })

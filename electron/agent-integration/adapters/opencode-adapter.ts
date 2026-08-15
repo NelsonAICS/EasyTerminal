@@ -5,7 +5,7 @@ const capabilities = {
   observeLifecycle: true,
   observeTools: true,
   approveOnce: true,
-  approveAlways: false,
+  approveAlways: true,
   answerChoice: true,
   answerText: true,
   answerMultiple: true,
@@ -23,7 +23,12 @@ export class OpenCodeAdapter implements AgentAdapter {
     if (!event.interactionId) return null
     const kind = event.eventType === 'PermissionRequest' ? 'permission' : event.eventType === 'AskUserQuestion' ? 'question' : null
     if (!kind) return null
-    const capabilitiesForEvent = capabilityList(this.capabilities, kind).filter(capability => capability !== 'allow_always' && (capability !== 'answer_multiple' || payload.multiSelect === true || payload.multiple === true))
+    const allowAlways = payload.allowAlways === true
+    const capabilitiesForEvent = capabilityList(this.capabilities, kind).filter(capability => {
+      if (capability === 'allow_always') return allowAlways
+      if (capability === 'answer_multiple') return payload.multiSelect === true || payload.multiple === true
+      return true
+    })
     return {
       interactionId: event.interactionId,
       kind,

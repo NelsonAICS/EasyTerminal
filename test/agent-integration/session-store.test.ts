@@ -92,4 +92,15 @@ describe('SessionStore', () => {
     expect(repeated).toMatchObject({ accepted: false, stale: true, reason: 'interaction_closed_or_responding' })
     expect(store.getInteraction('interaction-A')?.status).toBe('acknowledged')
   })
+
+  it('does not append the same transport failure repeatedly', () => {
+    const store = createSessionStore()
+    const adapter = new FakeAgentAdapter()
+    store.ingest(event({ eventId: 'event-failure' }), adapter)
+
+    store.markFailed('interaction-A', 'hook_connection_unavailable')
+    store.markFailed('interaction-A', 'hook_connection_unavailable')
+
+    expect(store.getInteraction('interaction-A')?.detail).toBe('npm test\nhook_connection_unavailable')
+  })
 })

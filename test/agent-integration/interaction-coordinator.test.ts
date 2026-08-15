@@ -49,6 +49,13 @@ describe('InteractionCoordinator', () => {
     expect(result).toMatchObject({ ok: false, code: 'unsupported_action' })
   })
 
+  it('keeps a Hook interaction safe when the user chooses to continue in the terminal', async () => {
+    const { coordinator, sendHook } = setup()
+    const result = await coordinator.submit({ interactionId: 'interaction-A', terminalSessionId: 'tab-A', revision: 1, action: 'jump_to_terminal' })
+    expect(result).toMatchObject({ ok: true, status: 'responding' })
+    expect(sendHook).toHaveBeenCalledWith({ action: 'jump_to_terminal' }, expect.anything())
+  })
+
   it('ISL-RESP-007 preserves free text including shell characters', async () => {
     const { coordinator, sendHook } = setup()
     const result = await coordinator.submit({

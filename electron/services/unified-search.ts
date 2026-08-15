@@ -4,8 +4,10 @@
 import * as promptManager from './prompt-manager';
 import * as skillManager from './skill-manager';
 import * as knowledgeBase from './knowledge-base';
-import * as workflowEngine from './workflow-engine';
 import * as contextStore from './context-store';
+import { getDatabase } from './database';
+import { WorkflowRepository } from './workflow-v2/repository';
+import type { SqliteDatabase } from './workflow-v2/sqlite';
 import type { EmbeddingConfig } from './vector-store';
 
 export interface UnifiedSearchResult {
@@ -182,14 +184,19 @@ async function searchKnowledge(query: string, embeddingConfig?: EmbeddingConfig,
 
 async function searchWorkflows(query: string, topK: number): Promise<UnifiedSearchResult[]> {
   try {
-    const workflows = workflowEngine.listWorkflows(query);
-    return workflows.slice(0, topK).map((w: { id: string; name: string; description: string; tags: string[] }, i: number) => ({
+    const repository = new WorkflowRepository(getDatabase() as unknown as SqliteDatabase);
+    const normalized = query.trim().toLowerCase();
+    const workflows = repository.listWorkflows().filter((workflow) => !normalized
+      || workflow.name.toLowerCase().includes(normalized)
+      || workflow.description.toLowerCase().includes(normalized)
+      || workflow.id.toLowerCase().includes(normalized));
+    return workflows.slice(0, topK).map((w, i: number) => ({
       source: 'workflow' as const,
       id: w.id,
       title: w.name,
       description: w.description,
       score: Math.max(0.85 - i * 0.1, 0.5),
-      metadata: { tags: w.tags },
+      metadata: { latestRevision: w.latestRevision, status: w.status },
       url: `workflow://${w.id}`,
     }));
   } catch {

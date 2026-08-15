@@ -3,6 +3,8 @@ import { resolveEmbeddingEndpoint } from '../../src/shared/api-endpoints';
 
 export interface EmbeddingConfig {
   source: 'local' | 'provider' | 'custom';
+  /** Provider V2 identity. Legacy callers may omit this and use source. */
+  providerId?: string;
   localUrl?: string;
   providerBaseUrl?: string;
   providerEmbeddingEndpoint?: string;
@@ -56,7 +58,8 @@ export async function generateEmbeddings(config: EmbeddingConfig, texts: string[
 
 // Local Ollama embedding
 async function generateLocalEmbedding(baseUrl: string, model: string, text: string): Promise<number[]> {
-  const res = await fetch(`${baseUrl}/api/embeddings`, {
+  const normalizedBaseUrl = baseUrl.replace(/\/v1\/?$/i, '').replace(/\/$/, '');
+  const res = await fetch(`${normalizedBaseUrl}/api/embeddings`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model, prompt: text }),

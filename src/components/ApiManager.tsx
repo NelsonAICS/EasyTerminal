@@ -8,6 +8,9 @@ import { ProviderIcon } from './ProviderIcon';
 import { ReasoningModelSection } from './ReasoningModelSection';
 import { EmbeddingModelSection } from './EmbeddingModelSection';
 import { ExternalServicesSection } from './ExternalServicesSection';
+import { ProviderManager } from '../features/providers/ProviderManager';
+import { NodeDefinitionManager } from '../features/workflow-v2/node-builder/NodeDefinitionManager';
+import { ShellCommandManager } from '../features/workflow-v2/node-builder/ShellCommandManager';
 import { CONNECTION_TEST_BUTTON_LABELS, CONNECTION_STATUS_LABELS } from '../lib/ui-copy';
 import { type AppId, type Provider, type AgentConfig, DEFAULT_PROVIDERS, DEFAULT_AGENTS } from '../types/agent';
 import { type AppSettingsConfig, type ExternalServiceConfig, type ServiceStatus, DEFAULT_APP_SETTINGS } from '../types/app-settings';
@@ -30,9 +33,10 @@ const getStatusColor = (status: string) => {
   }
 };
 
-type TabType = 'agents' | 'providers';
+type TabType = 'agents' | 'providers' | 'node-definitions' | 'shell-commands';
 
 export function ApiManager({ onClose }: { onClose: () => void }) {
+  const legacyProviderUiEnabled = false
   const [activeTab, setActiveTab] = useState<TabType>('agents');
   const [agents, setAgents] = useState<AgentConfig[]>([]);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -48,7 +52,9 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
   const activeAgent = agents.find(a => a.appId === activeAppId);
   const activeProvider = providers.find(p => p.id === activeAgent?.providerId);
   // Get selected provider for providers tab (from the provider list selection)
-  const selectedProvider = providers.find(p => p.id === activeProviderId);
+  // The legacy provider editor is retained only as unreachable compatibility
+  // markup while ProviderManager owns the active Provider V2 UI.
+  const selectedProvider = providers.find(p => p.id === activeProviderId) as Provider;
 
   useEffect(() => {
     if (ipcRenderer) {
@@ -482,10 +488,28 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
             <Server size={14} />
             模型供应商
           </button>
+          <button
+            onClick={() => setActiveTab('node-definitions')}
+            className={`flex items-center gap-2 px-5 py-2.5 text-xs font-medium transition-all border-b-2 ${
+              activeTab === 'node-definitions'
+                ? 'text-[var(--text-primary)] border-[var(--accent)] bg-[var(--surface-muted)]'
+                : 'text-[var(--text-secondary)] border-transparent hover:text-[var(--text-primary)]'
+            }`}
+          >
+            节点开发
+          </button>
+          <button
+            onClick={() => setActiveTab('shell-commands')}
+            className={`flex items-center gap-2 px-5 py-2.5 text-xs font-medium transition-all border-b-2 ${
+              activeTab === 'shell-commands' ? 'text-[var(--text-primary)] border-[var(--accent)] bg-[var(--surface-muted)]' : 'text-[var(--text-secondary)] border-transparent hover:text-[var(--text-primary)]'
+            }`}
+          >
+            Shell 命令
+          </button>
         </div>
 
         {/* Content */}
-        <div className="flex-1 flex overflow-hidden">
+        <div className="min-h-0 min-w-0 flex-1 flex overflow-hidden">
           {activeTab === 'agents' ? (
             activeAppId === 'easyterminal' ? (
               /* EasyTerminal Settings Panel */
@@ -668,8 +692,11 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
               )}
             </div>
             )
-          ) : (
+          ) : activeTab === 'providers' ? (
             /* Providers Panel */
+            <>
+            <ProviderManager />
+            {legacyProviderUiEnabled && (
             <div className="flex-1 flex overflow-hidden">
               {/* Provider List */}
               <div className="w-72 border-r border-[var(--panel-border)] bg-[var(--surface-muted)]">
@@ -788,7 +815,12 @@ export function ApiManager({ onClose }: { onClose: () => void }) {
                   </div>
                 )}
               </div>
-            </div>
+            </div>)}
+            </>
+          ) : activeTab === 'node-definitions' ? (
+            <NodeDefinitionManager />
+          ) : (
+            <ShellCommandManager />
           )}
         </div>
       </div>

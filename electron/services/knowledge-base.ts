@@ -2,9 +2,17 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { createHash } from 'node:crypto';
 import { dbAll, dbGet, dbInsert, dbDelete, dbQuery, dbRun, generateId } from './database';
 import { generateEmbedding, type EmbeddingConfig, serializeEmbedding, deserializeEmbedding, cosineSimilarity } from './vector-store';
 import { parseDocument } from './document-parser';
+import {
+  createIndexState,
+  isIndexCompatible,
+  markNeedsReindex,
+  transitionIndexState,
+  type KnowledgeIndexState,
+} from './knowledge-index';
 
 export interface KnowledgeDoc {
   id: string;
@@ -39,10 +47,116 @@ interface KnowledgeChunkRow {
   metadata: string;
 }
 
+interface KnowledgeIndexRow {
+  collection: string;
+  provider_id: string;
+  model_id: string;
+  dimensions: number | null;
+  index_version: number;
+  content_hash: string;
+  status: KnowledgeIndexState['status'];
+  total_chunks: number;
+  embedded_chunks: number;
+  failed_chunks: number;
+  error: string | null;
+  updated_at: string;
+}
+
 export interface RetrievalResult {
   chunk: { id: string; content: string; doc_id: string; metadata: Record<string, unknown> };
   doc?: { filename: string; collection: string };
   score: number;
+}
+
+export interface WorkflowRetrievalResult {
+  query: string;
+  contextText: string;
+  chunks: Array<{
+    id: string;
+    documentId: string;
+    content: string;
+    score: number;
+    source: string;
+    metadata: Record<string, unknown>;
+  }>;
+  citations: Array<{ chunkId: string; documentId: string; source: string; score: number }>;
+  truncated: boolean;
+}
+
+function indexIdentity(config: EmbeddingConfig) {
+  return {
+    providerId: config.providerId || config.source,
+    modelId: config.model,
+  };
+}
+
+function contentHash(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function rowToIndex(row: KnowledgeIndexRow): KnowledgeIndexState {
+  return {
+    collection: row.collection,
+    providerId: row.provider_id,
+    modelId: row.model_id,
+    dimensions: row.dimensions,
+    indexVersion: row.index_version,
+    contentHash: row.content_hash,
+    status: row.status,
+    totalChunks: row.total_chunks,
+    embeddedChunks: row.embedded_chunks,
+    failedChunks: row.failed_chunks,
+    error: row.error,
+    updatedAt: row.updated_at,
+  };
+}
+
+function getIndexState(collection: string): KnowledgeIndexState | undefined {
+  const row = dbQuery<KnowledgeIndexRow>('SELECT * FROM knowledge_index_states WHERE collection = ?', [collection])[0];
+  return row ? rowToIndex(row) : undefined;
+}
+
+function saveIndexState(state: KnowledgeIndexState): void {
+  dbRun(`
+    INSERT INTO knowledge_index_states
+      (collection, provider_id, model_id, dimensions, index_version, content_hash,
+       status, total_chunks, embedded_chunks, failed_chunks, error, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(collection) DO UPDATE SET
+      provider_id = excluded.provider_id,
+      model_id = excluded.model_id,
+      dimensions = excluded.dimensions,
+      index_version = excluded.index_version,
+      content_hash = excluded.content_hash,
+      status = excluded.status,
+      total_chunks = excluded.total_chunks,
+      embedded_chunks = excluded.embedded_chunks,
+      failed_chunks = excluded.failed_chunks,
+      error = excluded.error,
+      updated_at = excluded.updated_at
+  `, [
+    state.collection,
+    state.providerId,
+    state.modelId,
+    state.dimensions,
+    state.indexVersion,
+    state.contentHash,
+    state.status,
+    state.totalChunks,
+    state.embeddedChunks,
+    state.failedChunks,
+    state.error,
+  ]);
+}
+
+function assertIndexCompatible(collection: string, config: EmbeddingConfig, dimensions: number | null = null): KnowledgeIndexState | undefined {
+  const state = getIndexState(collection);
+  if (!state) return undefined;
+  const identity = indexIdentity(config);
+  if (!isIndexCompatible(state, { ...identity, dimensions })) {
+    throw new Error(`Knowledge index for ${collection} requires reindexing for ${identity.providerId}/${identity.modelId}`);
+  }
+  return state;
 }
 
 function rowToDoc(row: KnowledgeDocRow): KnowledgeDoc {
@@ -64,17 +178,42 @@ export async function addDocument(
   const ext = filename.split('.').pop()?.toLowerCase() || '';
   const docId = generateId();
 
+  const identity = indexIdentity(embeddingConfig);
+  const existingIndex = getIndexState(collection);
+  if (existingIndex && (existingIndex.providerId !== identity.providerId || existingIndex.modelId !== identity.modelId)) {
+    const needsReindex = markNeedsReindex(existingIndex, 'Embedding provider/model changed; rebuild the collection before adding documents');
+    saveIndexState(needsReindex);
+    throw new Error(needsReindex.error || 'Knowledge index requires reindexing');
+  }
+  let indexState = existingIndex ?? createIndexState(collection, {
+    ...identity,
+    contentHash: '',
+  });
+  saveIndexState(indexState);
+
   // Parse and chunk the document
   const chunks = parseDocument(filename, content);
+  indexState = transitionIndexState(indexState, 'chunking', { totalChunks: chunks.length, contentHash: contentHash(`${collection}:${filename}:${content}`) });
+  saveIndexState(indexState);
 
   // Generate embeddings for all chunks
   const texts = chunks.map(c => c.content);
-  let embeddings: number[][] = [];
-  try {
-    embeddings = await Promise.all(texts.map(t => generateEmbedding(embeddingConfig, t)));
-  } catch {
-    // If embedding fails, store chunks without vectors
-    embeddings = texts.map(() => []);
+  indexState = transitionIndexState(indexState, 'embedding');
+  saveIndexState(indexState);
+  const embeddings: Array<number[] | null> = await Promise.all(texts.map(async (text) => {
+    try { return await generateEmbedding(embeddingConfig, text); } catch { return null; }
+  }));
+  const successful = embeddings.filter((embedding): embedding is number[] => Boolean(embedding?.length));
+  const dimensions = successful[0]?.length ?? null;
+  const inconsistentDimensions = successful.some((embedding) => embedding.length !== dimensions);
+  if (inconsistentDimensions) {
+    indexState = transitionIndexState(indexState, 'failed', {
+      dimensions,
+      embeddedChunks: 0,
+      failedChunks: chunks.length,
+      error: 'Embedding dimensions changed within one index build',
+    });
+    saveIndexState(indexState);
   }
 
   // Insert document record
@@ -92,8 +231,8 @@ export async function addDocument(
   // Insert chunks with embeddings
   for (let i = 0; i < chunks.length; i++) {
     const chunkId = generateId();
-    const embedding = embeddings[i] && embeddings[i].length > 0
-      ? serializeEmbedding(embeddings[i])
+    const embedding = embeddings[i] && embeddings[i]!.length > 0 && !inconsistentDimensions
+      ? serializeEmbedding(embeddings[i]!)
       : null;
 
     dbInsert('knowledge_chunks', {
@@ -104,6 +243,17 @@ export async function addDocument(
       embedding,
       metadata: JSON.stringify(chunks[i].metadata),
     });
+  }
+
+  if (!inconsistentDimensions) {
+    const failedChunks = embeddings.filter((embedding) => !embedding?.length).length;
+    indexState = transitionIndexState(indexState, failedChunks ? 'failed' : 'indexed', {
+      dimensions,
+      embeddedChunks: chunks.length - failedChunks,
+      failedChunks,
+      error: failedChunks ? `${failedChunks} chunk(s) failed to embed` : null,
+    });
+    saveIndexState(indexState);
   }
 
   return rowToDoc({ ...doc, metadata: doc.metadata } as KnowledgeDocRow);
@@ -117,8 +267,14 @@ export async function retrieveContext(
   topK: number = 5,
   collection?: string,
 ): Promise<RetrievalResult[]> {
+  const indexState = assertIndexCompatible(collection || 'default', embeddingConfig);
   // Generate query embedding
   const queryVec = await generateEmbedding(embeddingConfig, query);
+  if (indexState && indexState.dimensions !== null && indexState.dimensions !== queryVec.length) {
+    const needsReindex = markNeedsReindex(indexState, 'Query embedding dimensions do not match the indexed model');
+    saveIndexState(needsReindex);
+    throw new Error(needsReindex.error || 'Knowledge index requires reindexing');
+  }
 
   // Get all chunks with embeddings (optionally filtered by collection)
   let rows: KnowledgeChunkRow[];
@@ -162,6 +318,30 @@ export async function retrieveContext(
       score,
     };
   });
+}
+
+export async function retrieveWorkflowContext(
+  query: string,
+  embeddingConfig: EmbeddingConfig,
+  topK = 5,
+  collection?: string,
+): Promise<WorkflowRetrievalResult> {
+  const results = await retrieveContext(query, embeddingConfig, topK, collection);
+  const chunks = results.map((result) => ({
+    id: result.chunk.id,
+    documentId: result.chunk.doc_id,
+    content: result.chunk.content,
+    score: result.score,
+    source: result.doc?.filename || 'unknown',
+    metadata: result.chunk.metadata,
+  }));
+  return {
+    query,
+    contextText: chunks.map((chunk, index) => `[${index + 1}] ${chunk.source}\n${chunk.content}`).join('\n\n---\n\n'),
+    chunks,
+    citations: chunks.map((chunk) => ({ chunkId: chunk.id, documentId: chunk.documentId, source: chunk.source, score: chunk.score })),
+    truncated: false,
+  };
 }
 
 // ── Build RAG-enhanced prompt ─────────────────────────────────────

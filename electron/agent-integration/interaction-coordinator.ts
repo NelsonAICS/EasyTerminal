@@ -47,23 +47,27 @@ export function createInteractionCoordinator(options: {
       }
       const interaction = options.store.getInteraction(response.interactionId)
       if (!interaction) return { ok: false, code: 'interaction_not_found', message: '交互不存在或已关闭' }
-      if (response.action === 'jump_to_terminal') return { ok: false, code: 'ui_only_action', message: '返回终端不是 Agent 响应动作', interaction }
       if (interaction.terminalSessionId !== response.terminalSessionId) return { ok: false, code: 'session_mismatch', message: '交互不属于当前终端标签页', interaction }
       if (interaction.revision !== response.revision) return { ok: false, code: 'stale_revision', message: '交互内容已更新，请重新确认', interaction }
       if (!hasCapability(interaction, response.action)) return { ok: false, code: 'unsupported_action', message: '当前 Agent 不支持该操作', interaction }
+      if (response.action === 'jump_to_terminal' && interaction.responseMode !== 'hook-response') {
+        return { ok: false, code: 'ui_only_action', message: '当前交互不需要 Agent 响应', interaction }
+      }
       if (requiresValue(response.action) && response.value === undefined) return { ok: false, code: 'missing_value', message: '该操作需要输入内容', interaction }
 
       const transition = options.store.markResponding(response.interactionId)
       if (!transition.ok) return { ok: false, code: transition.reason, message: transition.reason === 'duplicate' ? '该操作正在发送中' : '交互当前不可操作', interaction }
       const responding = transition.interaction
       const adapter = findAdapter(responding)
-      if (!adapter) {
+      if (!adapter && response.action !== 'jump_to_terminal') {
         const failed = options.store.markFailed(responding.interactionId, '未找到匹配的 Agent Adapter')
         if (failed) options.onStateChange?.(failed)
         return { ok: false, code: 'adapter_unavailable', message: '无法安全回传到该 Agent', interaction: failed }
       }
 
-      const payload = adapter.serializeResponse(response, responding)
+      const payload = response.action === 'jump_to_terminal'
+        ? { action: 'jump_to_terminal' }
+        : adapter?.serializeResponse(response, responding)
       try {
         if (responding.responseMode === 'view-only') throw new Error('view_only')
         if (responding.responseMode === 'pty-input') {

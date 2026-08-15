@@ -7,13 +7,14 @@ import { UIBadge, UIButton, UIInput } from './ui';
 interface FileExplorerPanelProps {
   currentDir: string;
   tree: FileTreeState;
-  activeFile: string | null;
+  activePath: string | null;
   selectedPaths: string[];
   favoritePaths: string[];
   recentDirs: string[];
   onGoUp: () => void;
   onOpen: (entry: FileEntry) => void;
-  onEnterDirectory: (path: string) => void;
+  onSelectEntry: (path: string) => void;
+  onContextMenu: (entry: FileTreeEntry) => void;
   onToggleDirectory: (path: string) => void;
   onRetryDirectory: (path: string) => void;
   onRefresh: () => void;
@@ -40,13 +41,14 @@ const pathLabel = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ||
 export function FileExplorerPanel({
   currentDir,
   tree,
-  activeFile,
+  activePath,
   selectedPaths,
   favoritePaths,
   recentDirs,
   onGoUp,
   onOpen,
-  onEnterDirectory,
+  onSelectEntry,
+  onContextMenu,
   onToggleDirectory,
   onRetryDirectory,
   onRefresh,
@@ -80,6 +82,7 @@ export function FileExplorerPanel({
 
   const rootEntries = rootDirectory?.entries || [];
   const folderCount = rootEntries.filter(file => file.kind === 'directory').length;
+  const displayedPath = activePath || currentDir || '/';
 
   const toggleSelection = (path: string) => {
     onSelectPaths(selectedPaths.includes(path)
@@ -90,7 +93,7 @@ export function FileExplorerPanel({
   const handleOpen = (entry: FileTreeEntry) => {
     if (entry.kind === 'directory') {
       if (view === 'recent') onOpenRecent(entry.path);
-      else onEnterDirectory(entry.path);
+      else onToggleDirectory(entry.path);
       return;
     }
     onOpen(toFileEntry(entry));
@@ -127,9 +130,9 @@ export function FileExplorerPanel({
         </div>
 
         <div className="shell-surface-soft mt-2 flex items-center gap-2 rounded-xl border border-[var(--panel-border)] px-3 py-2 text-[10px] text-[var(--text-secondary)]">
-          <div className="min-w-0 flex-1 truncate" title={currentDir}>{currentDir || '/'}</div>
+          <div className={`min-w-0 flex-1 truncate ${activePath ? 'text-[var(--text-primary)]' : ''}`} title={displayedPath}>{displayedPath}</div>
           <UIButton
-            onClick={() => void navigator.clipboard.writeText(currentDir)}
+            onClick={() => void navigator.clipboard.writeText(displayedPath)}
             tone="ghost"
             size="icon"
             className="h-7 w-7 shrink-0 rounded-lg"
@@ -182,14 +185,25 @@ export function FileExplorerPanel({
           const isSelected = selectedPaths.includes(entry.path);
           const isFavorite = favoritePaths.includes(entry.path);
           const childState = tree.directories[entry.path];
+          const isActive = activePath === entry.path;
 
           return (
             <Fragment key={`${entry.path}:${depth}`}>
-              <div className="group flex min-w-0 items-center gap-1 rounded-lg px-1 py-1 hover:bg-[var(--surface-muted)]" style={{ paddingLeft: `${depth * 14 + 4}px` }}>
+              <div
+                className={`group flex min-w-0 items-center gap-1 rounded-lg px-1 py-1 transition-colors ${isActive ? 'bg-[var(--accent)]/12 ring-1 ring-inset ring-[var(--accent)]/35' : 'hover:bg-[var(--surface-muted)]'}`}
+                style={{ paddingLeft: `${depth * 14 + 4}px` }}
+                onContextMenu={event => {
+                  event.preventDefault();
+                  onContextMenu(entry);
+                }}
+              >
               {isDirectory ? (
                 <button
                   type="button"
-                  onClick={() => onToggleDirectory(entry.path)}
+                  onClick={() => {
+                    onSelectEntry(entry.path);
+                    onToggleDirectory(entry.path);
+                  }}
                   className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--text-secondary)] hover:bg-[var(--surface-strong)] hover:text-[var(--text-primary)]"
                   title={isExpanded ? '折叠目录' : '展开目录'}
                 >
@@ -199,7 +213,10 @@ export function FileExplorerPanel({
 
               <button
                 type="button"
-                onClick={() => toggleSelection(entry.path)}
+                onClick={() => {
+                  onSelectEntry(entry.path);
+                  toggleSelection(entry.path);
+                }}
                 className={`flex h-6 w-6 shrink-0 items-center justify-center rounded text-[var(--text-secondary)] hover:text-[var(--text-primary)] ${isSelected ? 'text-[var(--accent)]' : ''}`}
                 title={isSelected ? '取消选择' : '选择'}
               >
@@ -209,8 +226,16 @@ export function FileExplorerPanel({
               <button
                 type="button"
                 onDoubleClick={() => handleOpen(entry)}
-                onClick={() => undefined}
-                className={`flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left ${activeFile === entry.path ? 'bg-[var(--accent)]/10' : ''}`}
+                onClick={() => onSelectEntry(entry.path)}
+                draggable
+                onDragStart={event => {
+                  onSelectEntry(entry.path);
+                  event.dataTransfer.effectAllowed = 'copy';
+                  event.dataTransfer.setData('application/x-easyterminal-path', entry.path);
+                  event.dataTransfer.setData('text/plain', entry.path);
+                }}
+                aria-current={isActive ? 'true' : undefined}
+                className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-1 text-left"
                 title={entry.path}
               >
                 {isDirectory ? <Folder size={15} className="shrink-0 text-[var(--accent)]" /> : <File size={15} className="shrink-0 text-[var(--text-secondary)]" />}
@@ -248,7 +273,7 @@ export function FileExplorerPanel({
       </div>
 
       <div className="shrink-0 border-t border-[var(--panel-border)] px-3 py-2 text-[10px] text-[var(--text-secondary)]">
-        双击目录进入，箭头逐级加载；双击文件打开。{rootDirectory?.loadState === 'error' ? ' 当前目录可重试。' : ''}
+        箭头展开或折叠目录；双击文件打开。{rootDirectory?.loadState === 'error' ? ' 当前目录可重试。' : ''}
       </div>
     </div>
   );

@@ -16,7 +16,13 @@ export function UIModal({ open, children, className, onClose }: UIModalProps) {
     <div
       className="fixed inset-0 z-[120] flex items-center justify-center bg-[color:color-mix(in_srgb,var(--bg-base)_78%,transparent)] p-6 backdrop-blur-xl"
       style={noDragStyle}
-      onClick={() => onClose?.()}
+      role="presentation"
+      onClick={(event) => {
+        // Only the backdrop itself closes the modal. This is deliberately
+        // target-based as a second guard in addition to the inner stopPropagation
+        // so a child panel can never accidentally dismiss its parent window.
+        if (event.target === event.currentTarget) onClose?.();
+      }}
     >
       <div
         className={cn(
@@ -25,6 +31,8 @@ export function UIModal({ open, children, className, onClose }: UIModalProps) {
           className,
         )}
         style={noDragStyle}
+        role="dialog"
+        aria-modal="true"
         onClick={(event) => event.stopPropagation()}
       >
         {children}

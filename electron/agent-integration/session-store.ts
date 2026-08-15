@@ -213,7 +213,9 @@ export function createSessionStore(): SessionStore {
       const interaction = pending.get(interactionId)
       if (!interaction) return undefined
       interaction.status = 'failed'
-      interaction.detail = `${interaction.detail ? `${interaction.detail}\n` : ''}${reason}`
+      const detailLines = interaction.detail ? interaction.detail.split('\n') : []
+      if (!detailLines.includes(reason)) detailLines.push(reason)
+      interaction.detail = detailLines.join('\n')
       return cloneInteraction(interaction)
     },
 

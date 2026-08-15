@@ -16,7 +16,7 @@ import { searchManualCommandSuggestions } from './data/commandManual'
 import { TERMINAL_AGENT_COPY } from './lib/ui-copy'
 import { getThemePreset, THEME_PRESETS } from './lib/themes'
 import { bindWebviewController, normalizeWebUrl, type WebLoadState } from './features/webview/webview-controller'
-import { type FileEntry, type FileTreeState, type ListDirectoryResult, type UIIntent } from './types/agent-extension'
+import { type FileEntry, type FileTreeEntry, type FileTreeState, type ListDirectoryResult, type UIIntent } from './types/agent-extension'
 import { applyDirectoryResult, beginDirectoryLoad, createFileTreeState, setTreeRoot, toggleDirectory } from './lib/file-tree'
 import type { QuickTool } from './components/CommandManualModal'
 
@@ -43,6 +43,25 @@ declare global {
       storeGet: (key: string, defaultValue?: unknown) => Promise<unknown>
       storeSet: (key: string, value: unknown) => Promise<boolean>
       storeDelete: (key: string) => Promise<boolean>
+      workflowV2: {
+        list: () => Promise<Array<{ id: string; name: string; description: string; latestRevision: number; status: string; createdAt: string; updatedAt: string }>>
+        get: (workflowId: string, revision?: number) => Promise<unknown>
+        saveRevision: (definition: unknown) => Promise<unknown>
+        execute: (request: unknown) => Promise<{ runId: string; workflowId: string; revision: number }>
+        cancel: (runId: string) => Promise<unknown>
+        resumeConfirmation: (confirmationId: string, approved: boolean) => Promise<unknown>
+        getRun: (runId: string) => Promise<unknown>
+        listRuns: (workflowId?: string, limit?: number) => Promise<unknown>
+        getPendingConfirmation: (runId: string) => Promise<unknown>
+        listDefinitions: () => Promise<unknown>
+        onEvent: (handler: (event: unknown) => void) => () => void
+        shellCommands: {
+          list: () => Promise<unknown>
+          saveDraft: (input: unknown) => Promise<unknown>
+          test: (input: unknown) => Promise<unknown>
+          publish: (input: unknown) => Promise<unknown>
+        }
+      }
     }
   }
   // eslint-disable-next-line @typescript-eslint/no-namespace
@@ -461,11 +480,11 @@ function App() {
   const [recentDirs, setRecentDirs] = useState<string[]>([])
   const fileTreeRequestIdRef = useRef(0)
 
-  const loadFiles = (dir: string) => {
+  const loadFiles = (dir: string, options: { setRoot?: boolean } = {}) => {
     if (!ipcRenderer || !dir) return
     fileTreeRequestIdRef.current += 1
     const requestId = `file-tree-${Date.now()}-${fileTreeRequestIdRef.current}`
-    setFileTree(previous => beginDirectoryLoad(setTreeRoot(previous, dir), dir, requestId))
+    setFileTree(previous => beginDirectoryLoad(options.setRoot ? setTreeRoot(previous, dir) : previous, dir, requestId))
     ipcRenderer.invoke('fs:tree:list', { path: dir, includeHidden: false, requestId }).then((result: ListDirectoryResult) => {
       setFileTree(previous => applyDirectoryResult(previous, result))
     }).catch(() => {
@@ -499,7 +518,7 @@ function App() {
     ipcRenderer.invoke('store:set', 'file_tree_recent_dirs', recentDirs).catch(() => undefined)
   }, [recentDirs])
 
-  const [activeFile, setActiveFile] = useState<string | null>(null)
+  const [activePath, setActivePath] = useState<string | null>(null)
   
   const [showNewFileModal, setShowNewFileModal] = useState(false)
   const [newFileName, setNewFileName] = useState('')
@@ -543,7 +562,7 @@ function App() {
   const openEditorPath = useCallback((path: string) => {
     closeFloatingPages()
     setEditorFile(path)
-    setActiveFile(path)
+    setActivePath(path)
     setPreviewMode(path.toLowerCase().endsWith('.md'))
     ipcRenderer?.invoke('file:read', path).then((content: string) => {
       setEditorContent(content)
@@ -555,8 +574,17 @@ function App() {
   const openImageAsset = useCallback((path: string, src: string, label?: string) => {
     closeFloatingPages()
     setPreviewImage({ file: label || path, src })
-    setActiveFile(path)
+    setActivePath(path)
   }, [closeFloatingPages])
+
+  const showFileContextMenu = (entry: FileTreeEntry) => {
+    setActivePath(entry.path)
+    ipcRenderer?.send('menu:show', 'file', {
+      name: entry.name,
+      path: entry.path,
+      isDirectory: entry.kind === 'directory',
+    })
+  }
 
   const clampPanels = useCallback((nextWorkspace: number, nextExplorer: number) => {
     const mainArea = mainAreaRef.current
@@ -728,19 +756,6 @@ function App() {
     window.dispatchEvent(new CustomEvent(`terminal:write:${activeSessionId}`, { detail: payload }))
   }, [activeSessionId])
 
-  const formatWorkflowNodeTitle = useCallback((nodeType?: string, nodeLabel?: string, nodeId?: string) => {
-    if (nodeLabel || nodeType) {
-      return `${nodeLabel || nodeId || 'Unknown'}${nodeType ? ` (${nodeType})` : ''}`
-    }
-    return nodeId || 'Unknown'
-  }, [])
-
-  const resolveWorkflowLogTone = useCallback((logType: 'info' | 'error' | 'output'): 'success' | 'error' | 'info' => {
-    if (logType === 'error') return 'error'
-    if (logType === 'output') return 'success'
-    return 'info'
-  }, [])
-
   const persistTerminalAgentActivity = useCallback(async (
     commandLine: string,
     resultText: string,
@@ -778,37 +793,6 @@ function App() {
     ]).catch(() => undefined)
   }, [activeSessionId])
 
-  useEffect(() => {
-    if (!ipcRenderer) return
-
-    const handleWorkflowStatus = (
-      _event: unknown,
-      status: { type?: string; nodeId?: string; nodeType?: string; nodeLabel?: string }
-    ) => {
-      const displayName = formatWorkflowNodeTitle(status?.nodeType, status?.nodeLabel, status?.nodeId)
-      const actionLabel = status?.type === 'node_complete' ? '完成' : '开始'
-      writeTerminalSystemMessage(`Workflow ${actionLabel}`, displayName, 'info')
-    }
-
-    const handleWorkflowLog = (
-      _event: unknown,
-      log: { nodeId?: string; type?: 'info' | 'error' | 'output'; message?: string }
-    ) => {
-      if (!log) return
-      const line = `[${log.nodeId || 'workflow'}] ${log.message || ''}`.trim()
-      const tone = resolveWorkflowLogTone(log.type || 'info')
-      writeTerminalSystemMessage('Workflow 日志', line || '收到运行日志', tone)
-    }
-
-    ipcRenderer.on('workflow:status', handleWorkflowStatus)
-    ipcRenderer.on('workflow:log', handleWorkflowLog)
-
-    return () => {
-      ipcRenderer.removeListener('workflow:status', handleWorkflowStatus)
-      ipcRenderer.removeListener('workflow:log', handleWorkflowLog)
-    }
-  }, [formatWorkflowNodeTitle, resolveWorkflowLogTone, writeTerminalSystemMessage])
-
   const primaryThemePresets = THEME_PRESETS.filter(themePreset => !themePreset.id.startsWith('catppuccin-'))
   const catppuccinThemePresets = THEME_PRESETS.filter(themePreset => themePreset.id.startsWith('catppuccin-'))
   const activeThemePreset = getThemePreset(theme)
@@ -823,7 +807,7 @@ function App() {
     if (ipcRenderer) {
       ipcRenderer.invoke('fs:homedir').then((dir: string) => {
         setCurrentDir(dir)
-        loadFiles(dir)
+        loadFiles(dir, { setRoot: true })
       })
     }
    
@@ -925,6 +909,26 @@ function App() {
             electron.clipboard.writeText(contextData.path)
           }
         })
+      } else if (action === 'copy-name') {
+        navigator.clipboard.writeText(contextData.name).catch(() => {
+          if (electron && electron.clipboard) electron.clipboard.writeText(contextData.name)
+        })
+      } else if (action === 'show-in-finder') {
+        void ipcRenderer.invoke('fs:show-in-finder', contextData.path, contextData.isDirectory).then((result: { ok?: boolean; error?: string }) => {
+          if (result?.ok === false) {
+            writeTerminalSystemMessage('在 Finder 中打开失败', result.error || '无法定位该项目。', 'error')
+          }
+        }).catch((error: unknown) => {
+          writeTerminalSystemMessage('在 Finder 中打开失败', error instanceof Error ? error.message : '无法定位该项目。', 'error')
+        })
+      } else if (action === 'open-with') {
+        void ipcRenderer.invoke('fs:open-with', contextData.path).then((result: { ok?: boolean; error?: string; canceled?: boolean }) => {
+          if (result?.ok === false && !result.canceled) {
+            writeTerminalSystemMessage('选择打开方式失败', result.error || '无法打开该项目。', 'error')
+          }
+        }).catch((error: unknown) => {
+          writeTerminalSystemMessage('选择打开方式失败', error instanceof Error ? error.message : '无法打开该项目。', 'error')
+        })
       } else if (action === 'insert-path') {
         setInput(prev => prev + (prev.endsWith(' ') || prev === '' ? '' : ' ') + contextData.path)
       } else if (action === 'edit-file') {
@@ -953,7 +957,7 @@ function App() {
       window.removeEventListener('session-analytics', handleAnalytics)
       ipcRenderer?.removeListener('menu:action', handleMenuAction)
     }
-  }, [currentDir, activeSessionId, openEditorPath])
+  }, [currentDir, activeSessionId, openEditorPath, writeTerminalSystemMessage])
 
   useEffect(() => {
     if (!ipcRenderer) return
@@ -976,7 +980,7 @@ function App() {
           closeFloatingPages()
           setEditorFile(newPath)
           setEditorContent('')
-          setActiveFile(newPath)
+          setActivePath(newPath)
           setPreviewMode(false)
           setShowNewFileModal(false)
         })
@@ -1003,7 +1007,18 @@ function App() {
 
     if (/\.(txt|md|js|ts|jsx|tsx|json|html|css|py|java|c|cpp|go|rs|sh|bash|zsh|yml|yaml|xml|toml|csv|ini|conf)$/i.test(file.name) || file.name.startsWith('.')) {
       openEditorPath(file.path)
+      return
     }
+
+    // Keep unsupported formats out of the in-app editor and let the operating
+    // system choose the user's configured default application.
+    void ipcRenderer?.invoke('fs:open-default', file.path).then((result: { ok?: boolean; error?: string }) => {
+      if (result?.ok === false) {
+        writeTerminalSystemMessage('打开文件失败', result.error || '系统没有可用的默认打开方式。', 'error')
+      }
+    }).catch((error: unknown) => {
+      writeTerminalSystemMessage('打开文件失败', error instanceof Error ? error.message : '系统没有可用的默认打开方式。', 'error')
+    })
   }
 
   const handleCreateFolder = (name: string) => {
@@ -1015,9 +1030,10 @@ function App() {
 
   const handleDirClick = (dir: string) => {
     setCurrentDir(dir)
+    setActivePath(null)
     setSelectedPaths([])
     setRecentDirs(previous => [dir, ...previous.filter(item => item !== dir)].slice(0, 20))
-    loadFiles(dir)
+    loadFiles(dir, { setRoot: true })
   }
 
   const handleToggleDirectory = (path: string) => {
@@ -1144,18 +1160,18 @@ function App() {
       const match = query.match(/^\/workflow\s+(run|get)\s+(\S*)/i)
       const mode = match?.[1]?.toLowerCase() || 'get'
       const workflowToken = match?.[2]?.trim().toLowerCase() || ''
-      const workflows = await ipcRenderer.invoke('workflow:list')
-      const workflowSuggestions = ((workflows as Array<{ id: string; name: string; variables?: Record<string, string> }>) || [])
+      const workflows = await ipcRenderer.invoke('workflow-v2:list')
+      const workflowSuggestions = ((workflows as Array<{ id: string; name: string; latestRevision?: number }>) || [])
         .filter(workflow => !workflowToken || workflow.id.toLowerCase().includes(workflowToken) || workflow.name.toLowerCase().includes(workflowToken))
         .slice(0, 6)
         .map(workflow => ({
           id: `workflow-${mode}-${workflow.id}`,
           label: `${workflow.name} (${workflow.id})`,
           value: mode === 'run'
-            ? `/workflow run ${workflow.id} ${buildWorkflowRunTemplate(workflow.variables || {})}`
+            ? `/workflow run ${workflow.id} {}`
             : `/workflow get ${workflow.id}`,
           hint: mode === 'run'
-            ? `执行工作流${Object.keys(workflow.variables || {}).length ? ` · 参数: ${Object.keys(workflow.variables || {}).join(', ')}` : ''}`
+            ? `执行工作流（修订 ${workflow.latestRevision ?? 1}）`
             : '查看工作流定义',
           kind: 'manual' as const,
           replaceMode: 'all' as const,
@@ -1637,7 +1653,7 @@ function App() {
       if (ipcRenderer) {
         ipcRenderer.invoke('file:read', file).then((content: string) => {
           setEditorContent(content)
-          setActiveFile(file)
+          setActivePath(file)
         }).catch(() => {
           setEditorContent('')
         })
@@ -1837,9 +1853,10 @@ function App() {
   // Handle Drag & Drop Files
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
+    e.stopPropagation()
 
     // Handle drag from internal sidebar
-    const internalPath = e.dataTransfer.getData('text/plain')
+    const internalPath = e.dataTransfer.getData('application/x-easyterminal-path') || e.dataTransfer.getData('text/plain')
     if (internalPath) {
       setInput(prev => prev + (prev.endsWith(' ') || prev === '' ? '' : ' ') + internalPath)
       return
@@ -2169,7 +2186,7 @@ function App() {
                     <Save size={14} /> Save
                   </button>
                 )}
-                <button onClick={() => { setEditorFile(null); setActiveFile(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
+                <button onClick={() => { setEditorFile(null); setActivePath(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
                   <X size={14} /> Close
                 </button>
               </div>
@@ -2214,7 +2231,7 @@ function App() {
                   <span className="text-[var(--text-primary)]">{previewImage.file}</span>
                 </div>
               </div>
-              <button onClick={() => { setPreviewImage(null); setActiveFile(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
+              <button onClick={() => { setPreviewImage(null); setActivePath(null); }} className="text-xs font-mono px-4 py-1.5 bg-red-500/10 text-red-400 hover:bg-red-500/20 rounded-full border border-red-500/20 transition-colors flex items-center gap-1.5">
                 <X size={14} /> Close
               </button>
             </div>
@@ -2506,6 +2523,8 @@ function App() {
                     setIsInputComposing(false)
                     void handleInputChange(e.currentTarget.value, { force: true })
                   }}
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
                   onKeyDown={handleKeyDown}
                   autoFocus
                 />
@@ -2653,13 +2672,14 @@ function App() {
               <FileExplorerPanel
                 currentDir={currentDir}
                 tree={fileTree}
-                activeFile={activeFile}
+                activePath={activePath}
                 selectedPaths={selectedPaths}
                 favoritePaths={favoritePaths}
                 recentDirs={recentDirs}
                 onGoUp={handleParentDir}
                 onOpen={openFileEntry}
-                onEnterDirectory={handleDirClick}
+                onSelectEntry={setActivePath}
+                onContextMenu={showFileContextMenu}
                 onToggleDirectory={handleToggleDirectory}
                 onRetryDirectory={(path) => loadFiles(path)}
                 onRefresh={() => loadFiles(currentDir)}

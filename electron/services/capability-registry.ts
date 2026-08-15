@@ -11,7 +11,6 @@ import type { EmbeddingConfig } from './vector-store';
 import * as promptManager from './prompt-manager';
 import * as skillManager from './skill-manager';
 import * as knowledgeBase from './knowledge-base';
-import * as workflowEngine from './workflow-engine';
 import * as contextStore from './context-store';
 
 interface CapabilityHandlerContext {
@@ -24,6 +23,9 @@ interface CapabilityHandlerContext {
   listSessionEvents: (sessionId: string, limit?: number) => SessionEvent[];
   setUIIntent: (intent: UIIntent) => UIIntent;
   clearUIIntent: () => boolean;
+  listWorkflowV2?: (query?: string) => unknown[];
+  getWorkflowV2?: (workflowId: string) => unknown;
+  executeWorkflowV2?: (workflowId: string, input: Record<string, unknown>) => Promise<unknown>;
 }
 
 type CapabilityHandler = (
@@ -47,14 +49,18 @@ function includesQuery(value: string, query: string) {
   return value.toLowerCase().includes(query);
 }
 
-function searchWorkflows(query: string) {
+function searchWorkflows(query: string, list: () => unknown[] = () => []) {
   const normalized = query.trim().toLowerCase();
-  if (!normalized) return workflowEngine.listWorkflows();
-  return workflowEngine.listWorkflows().filter(workflow =>
-    workflow.name.toLowerCase().includes(normalized) ||
-    workflow.description.toLowerCase().includes(normalized) ||
-    workflow.tags.some(tag => tag.toLowerCase().includes(normalized))
-  );
+  const workflows = list();
+  if (!normalized) return workflows;
+  return workflows.filter((workflow) => {
+    if (!workflow || typeof workflow !== 'object') return false;
+    const value = workflow as { name?: unknown; description?: unknown; tags?: unknown };
+    const tags = Array.isArray(value.tags) ? value.tags.map(String) : [];
+    return String(value.name ?? '').toLowerCase().includes(normalized)
+      || String(value.description ?? '').toLowerCase().includes(normalized)
+      || tags.some((tag) => tag.toLowerCase().includes(normalized));
+  });
 }
 
 export class CapabilityRegistry {
@@ -270,9 +276,9 @@ export function createDefaultCapabilityRegistry(context: CapabilityHandlerContex
       },
       permissions: [],
       memoryPolicy: { ...DEFAULT_MEMORY_POLICY, summarizeOutput: true, defaultScope: 'project' },
-      entrypoint: { type: 'local-js', target: 'workflowEngine.listWorkflows' },
+      entrypoint: { type: 'local-js', target: 'workflowV2.listWorkflows' },
     },
-    async input => searchWorkflows(String(input.query || '')),
+    async (input, runtime) => searchWorkflows(String(input.query || ''), () => runtime.listWorkflowV2?.() ?? []),
   );
 
   registry.register(
@@ -294,10 +300,10 @@ export function createDefaultCapabilityRegistry(context: CapabilityHandlerContex
       },
       permissions: [],
       memoryPolicy: { ...DEFAULT_MEMORY_POLICY, summarizeOutput: true, defaultScope: 'project' },
-      entrypoint: { type: 'local-js', target: 'workflowEngine.getWorkflow' },
+      entrypoint: { type: 'local-js', target: 'workflowV2.getWorkflow' },
     },
-    async input => {
-      const workflow = workflowEngine.getWorkflow(String(input.workflowId || ''));
+    async (input, runtime) => {
+      const workflow = runtime.getWorkflowV2?.(String(input.workflowId || ''));
       if (!workflow) throw new Error('Workflow not found');
       return workflow;
     },
@@ -325,20 +331,11 @@ export function createDefaultCapabilityRegistry(context: CapabilityHandlerContex
       },
       permissions: [],
       memoryPolicy: { ...DEFAULT_MEMORY_POLICY, summarizeOutput: true, defaultScope: 'project' },
-      entrypoint: { type: 'local-js', target: 'workflowEngine.executeWorkflow' },
+      entrypoint: { type: 'local-js', target: 'workflowV2.start' },
     },
     async (input, runtime) => {
-      const llmConfig = runtime.getLLMConfig(
-        typeof input.providerId === 'string' ? input.providerId : undefined,
-        typeof input.model === 'string' ? input.model : undefined,
-      );
-      if (!llmConfig) throw new Error('No reasoning model configured');
-      return workflowEngine.executeWorkflow(
-        String(input.workflowId || ''),
-        llmConfig,
-        (input.variables || {}) as Record<string, unknown>,
-        runtime.getEmbeddingConfig(),
-      );
+      if (!runtime.executeWorkflowV2) throw new Error('Workflow V2 runtime is not ready');
+      return runtime.executeWorkflowV2(String(input.workflowId || ''), (input.input || input.variables || {}) as Record<string, unknown>);
     },
   );
 

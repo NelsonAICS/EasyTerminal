@@ -6,6 +6,13 @@ import { bindWebviewController, normalizeWebUrl, type WebviewLike } from '../src
 import { THEME_PRESETS } from '../src/lib/themes';
 
 describe('file tree response race protection', () => {
+  it('loads a child directory without changing the visible tree root', () => {
+    const root = createFileTreeState('/home/user');
+    const childLoading = beginDirectoryLoad(root, '/home/user/projects', 'child-request');
+    expect(childLoading.rootPath).toBe('/home/user');
+    expect(childLoading.directories['/home/user/projects']?.loadState).toBe('loading');
+  });
+
   it('ignores an older response for the same directory', () => {
     const root = createFileTreeState('/tmp');
     const loading = beginDirectoryLoad(beginDirectoryLoad(root, '/tmp', 'new'), '/tmp', 'latest');
@@ -42,6 +49,44 @@ describe('webview load state', () => {
     expect(states).toEqual(['loading', 'error']);
     cleanup();
     expect(Array.from(listeners.values()).every(items => items.length === 0)).toBe(true);
+  });
+
+  it('falls back to ready when did-finish-load is missed but loading stops', () => {
+    const listeners = new Map<string, Array<(event: unknown) => void>>();
+    const webview: WebviewLike = {
+      addEventListener: (type, listener) => listeners.set(type, [...(listeners.get(type) || []), listener]),
+      removeEventListener: (type, listener) => listeners.set(type, (listeners.get(type) || []).filter(item => item !== listener)),
+      getURL: () => 'https://www.google.com/',
+      getTitle: () => 'Google',
+      canGoBack: () => false,
+      canGoForward: () => false,
+      isLoading: () => true,
+    };
+    const states: string[] = [];
+    bindWebviewController(webview, { onState: state => states.push(state.kind) });
+
+    listeners.get('did-stop-loading')?.forEach(listener => listener({}));
+
+    expect(states).toEqual(['loading', 'ready']);
+  });
+
+  it('uses dom-ready as the final fallback when loading events are incomplete', () => {
+    const listeners = new Map<string, Array<(event: unknown) => void>>();
+    const webview: WebviewLike = {
+      addEventListener: (type, listener) => listeners.set(type, [...(listeners.get(type) || []), listener]),
+      removeEventListener: (type, listener) => listeners.set(type, (listeners.get(type) || []).filter(item => item !== listener)),
+      getURL: () => 'https://www.google.com/',
+      getTitle: () => 'Google',
+      canGoBack: () => false,
+      canGoForward: () => false,
+      isLoading: () => true,
+    };
+    const states: string[] = [];
+    bindWebviewController(webview, { onState: state => states.push(state.kind) });
+
+    listeners.get('dom-ready')?.forEach(listener => listener({}));
+
+    expect(states).toEqual(['loading', 'ready']);
   });
 
   it('normalizes only http and https URLs', () => {
