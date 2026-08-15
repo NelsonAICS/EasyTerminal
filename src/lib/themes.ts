@@ -37,7 +37,47 @@ export interface ThemePreset {
   };
 }
 
+export const DEFAULT_THEME_ID = 'liquid-glass';
+
 export const THEME_PRESETS: ThemePreset[] = [
+  {
+    id: 'liquid-glass',
+    name: 'Liquid Glass',
+    description: '冷蓝流光与半透明玻璃，带一点空间计算感。',
+    className: 'theme-liquid-glass',
+    accent: '#75c8ff',
+    terminal: {
+      background: '#08101f',
+      foreground: '#eff6ff',
+      cursor: '#7dd3fc',
+      selectionBackground: 'rgba(117, 200, 255, 0.24)',
+      black: '#0b1220',
+      red: '#ff7a9e',
+      green: '#62e6b4',
+      yellow: '#f4cf76',
+      blue: '#73a9ff',
+      magenta: '#c39bff',
+      cyan: '#6fe7ff',
+      white: '#dfeaff',
+      brightBlack: '#6f82a2',
+      brightRed: '#ff9fb7',
+      brightGreen: '#97f4ce',
+      brightYellow: '#ffe59a',
+      brightBlue: '#a9c7ff',
+      brightMagenta: '#e0c6ff',
+      brightCyan: '#a9f3ff',
+      brightWhite: '#ffffff',
+    },
+    terminalOptions: {
+      fontFamily: '"SF Mono", "SF Pro Text", "JetBrains Mono", Menlo, Monaco, monospace',
+      fontWeight: 430,
+      fontWeightBold: 680,
+      lineHeight: 1.38,
+      letterSpacing: 0.1,
+      cursorStyle: 'bar',
+      cursorWidth: 2,
+    },
+  },
   {
     id: 'obsidian',
     name: 'Obsidian',

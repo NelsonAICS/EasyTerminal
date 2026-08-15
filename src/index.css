@@ -4,7 +4,7 @@
 
 @layer base {
   :root {
-    /* Warm Noir Desktop (Default) */
+    /* Fallback tokens; the default rendered theme is Liquid Glass below. */
     --bg-base: rgba(22, 19, 18, 0.96);
     --bg-gradient: radial-gradient(circle at 18% 10%, rgba(88, 102, 184, 0.16), transparent 24%), radial-gradient(circle at 82% 14%, rgba(101, 114, 209, 0.14), transparent 24%), linear-gradient(180deg, #171412 0%, #14110f 42%, #0f0d0c 100%);
     --panel-bg: rgba(25, 22, 20, 0.84);
@@ -39,6 +39,42 @@
     --ui-warning-bg: rgba(245, 158, 11, 0.14);
     --ui-warning-border: rgba(251, 191, 36, 0.26);
     --ui-warning-text: #ffd88b;
+  }
+
+  .theme-liquid-glass {
+    --bg-base: rgba(10, 17, 35, 0.94);
+    --bg-gradient: radial-gradient(ellipse at 3% -4%, rgba(143, 183, 255, 0.22), transparent 34%), radial-gradient(ellipse at 101% 2%, rgba(137, 226, 232, 0.16), transparent 32%), radial-gradient(ellipse at 55% 112%, rgba(176, 144, 230, 0.15), transparent 42%), linear-gradient(116deg, transparent 28%, rgba(120, 165, 230, 0.06) 43%, rgba(174, 143, 220, 0.08) 57%, transparent 74%), linear-gradient(135deg, #0b1630 0%, #172a50 46%, #0c1125 100%);
+    --panel-bg: rgba(22, 37, 65, 0.46);
+    --panel-border: rgba(199, 222, 255, 0.25);
+    --panel-border-glow: rgba(145, 210, 255, 0.46);
+    --text-primary: #eaf2ff;
+    --text-secondary: #bfcee4;
+    --accent: #9bdcff;
+    --term-fg: #eff6ff;
+    --surface-muted: rgba(154, 202, 255, 0.10);
+    --surface-strong: rgba(18, 34, 62, 0.64);
+    --shadow-color: rgba(0, 7, 26, 0.56);
+    --ui-sidebar-bg: rgba(7, 15, 33, 0.62);
+    --ui-pane-header-bg: rgba(255, 255, 255, 0.04);
+    --ui-pane-footer-bg: rgba(255, 255, 255, 0.035);
+    --ui-card-bg: rgba(255, 255, 255, 0.045);
+    --ui-card-hover-bg: rgba(155, 220, 255, 0.10);
+    --ui-card-selected-bg: rgba(155, 220, 255, 0.14);
+    --ui-card-shadow: 0 20px 40px -25px var(--shadow-color);
+    --ui-kicker: rgba(185, 211, 249, 0.56);
+    --ui-badge-neutral-bg: rgba(255, 255, 255, 0.045);
+    --ui-badge-neutral-text: #b9c9e4;
+    --ui-info-bg: rgba(117, 200, 255, 0.08);
+    --ui-info-border: rgba(117, 200, 255, 0.25);
+    --ui-info-text: #b8e4ff;
+    --ui-success-bg: rgba(43, 218, 161, 0.13);
+    --ui-success-border: rgba(98, 230, 180, 0.28);
+    --ui-success-text: #9bf5d3;
+    --ui-success-strong-bg: #159b76;
+    --ui-success-strong-text: #f0fff9;
+    --ui-warning-bg: rgba(245, 190, 71, 0.14);
+    --ui-warning-border: rgba(244, 207, 118, 0.28);
+    --ui-warning-text: #ffe29b;
   }
 
   .theme-graphite {
@@ -257,6 +293,136 @@ html, body, #root {
 .theme-meadow,
 .theme-catppuccin-latte {
   color-scheme: light;
+}
+
+.theme-liquid-glass .glass-panel,
+.theme-liquid-glass .glass-panel-deep,
+.theme-liquid-glass .shell-panel {
+  background-image:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.07), transparent 34%),
+    radial-gradient(ellipse at 90% 0%, rgba(130, 211, 239, 0.07), transparent 40%);
+  backdrop-filter: blur(36px) saturate(132%);
+  -webkit-backdrop-filter: blur(36px) saturate(132%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.11),
+    inset 0 -1px 0 rgba(126, 199, 255, 0.06),
+    0 0 0 1px rgba(173, 224, 255, 0.025),
+    0 22px 52px -34px var(--shadow-color);
+}
+
+.theme-liquid-glass {
+  isolation: isolate;
+}
+
+.theme-liquid-glass .shell-overlay {
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.045), transparent 35%),
+    color-mix(in srgb, var(--bg-base) 68%, transparent);
+  backdrop-filter: blur(36px) saturate(135%);
+  -webkit-backdrop-filter: blur(36px) saturate(135%);
+}
+
+.theme-liquid-glass .shell-surface {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.05), transparent 38%),
+    radial-gradient(ellipse at 100% 0%, rgba(107, 213, 255, 0.065), transparent 42%),
+    color-mix(in srgb, var(--surface-strong) 80%, transparent);
+  backdrop-filter: blur(30px) saturate(132%);
+  -webkit-backdrop-filter: blur(30px) saturate(132%);
+}
+
+.theme-liquid-glass .shell-surface-soft {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.06), transparent 45%),
+    color-mix(in srgb, var(--surface-muted) 76%, transparent);
+  backdrop-filter: blur(24px) saturate(132%);
+  -webkit-backdrop-filter: blur(24px) saturate(132%);
+}
+
+.theme-liquid-glass .ui-field {
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.045), transparent 42%),
+    color-mix(in srgb, var(--surface-strong) 78%, transparent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 14px 32px -28px var(--shadow-color);
+}
+
+.theme-liquid-glass > .pointer-events-none > div:nth-child(2) {
+  background: radial-gradient(circle, rgba(132, 190, 255, 0.24) 0%, rgba(132, 190, 255, 0.055) 45%, transparent 74%);
+  filter: blur(32px);
+  animation: liquid-glass-drift-a 22s ease-in-out infinite alternate;
+}
+
+.theme-liquid-glass > .pointer-events-none > div:nth-child(3) {
+  background: radial-gradient(circle, rgba(126, 211, 232, 0.20) 0%, rgba(126, 211, 232, 0.045) 45%, transparent 74%);
+  filter: blur(30px);
+  animation: liquid-glass-drift-b 26s ease-in-out infinite alternate;
+}
+
+.theme-liquid-glass::before {
+  position: absolute;
+  inset: -18%;
+  z-index: 0;
+  pointer-events: none;
+  content: '';
+  background:
+    radial-gradient(ellipse at 30% 30%, rgba(110, 165, 235, 0.08), transparent 34%),
+    radial-gradient(ellipse at 70% 72%, rgba(170, 139, 214, 0.07), transparent 36%);
+  filter: blur(72px) saturate(112%);
+  opacity: 0.72;
+  animation: liquid-glass-atmosphere 34s ease-in-out infinite alternate;
+}
+
+.theme-liquid-glass::after {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  content: '';
+  background: linear-gradient(118deg, rgba(255, 255, 255, 0.045), transparent 19%, transparent 72%, rgba(125, 225, 255, 0.035));
+  mix-blend-mode: screen;
+  opacity: 0.42;
+}
+
+@keyframes liquid-glass-drift-a {
+  from { transform: translate3d(-2%, -3%, 0) scale(0.96); }
+  to { transform: translate3d(5%, 4%, 0) scale(1.08); }
+}
+
+@keyframes liquid-glass-drift-b {
+  from { transform: translate3d(3%, 2%, 0) scale(0.94); }
+  to { transform: translate3d(-5%, 5%, 0) scale(1.08); }
+}
+
+@keyframes liquid-glass-atmosphere {
+  from { transform: translate3d(-2%, -1%, 0) scale(0.98) rotate(-1deg); }
+  to { transform: translate3d(3%, 2%, 0) scale(1.06) rotate(1deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .theme-liquid-glass > .pointer-events-none > div:nth-child(2),
+  .theme-liquid-glass > .pointer-events-none > div:nth-child(3) {
+    animation: none;
+  }
+
+  .theme-liquid-glass::before {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .theme-liquid-glass .glass-panel,
+  .theme-liquid-glass .glass-panel-deep,
+  .theme-liquid-glass .shell-panel,
+  .theme-liquid-glass .shell-overlay,
+  .theme-liquid-glass .shell-surface,
+  .theme-liquid-glass .shell-surface-soft {
+    background-image: none;
+    background-color: var(--panel-bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 
 body {

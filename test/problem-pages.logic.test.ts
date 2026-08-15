@@ -3,7 +3,7 @@ import { applyDirectoryResult, beginDirectoryLoad, createFileTreeState } from '.
 import { contrastRatio } from '../src/lib/color';
 import { reduceWebLoadState } from '../src/lib/webview-state';
 import { bindWebviewController, normalizeWebUrl, type WebviewLike } from '../src/features/webview/webview-controller';
-import { THEME_PRESETS } from '../src/lib/themes';
+import { DEFAULT_THEME_ID, THEME_PRESETS } from '../src/lib/themes';
 
 describe('file tree response race protection', () => {
   it('loads a child directory without changing the visible tree root', () => {
@@ -96,6 +96,11 @@ describe('webview load state', () => {
 });
 
 describe('theme terminal contrast', () => {
+  it('uses the liquid glass theme as the default preset', () => {
+    expect(DEFAULT_THEME_ID).toBe('liquid-glass');
+    expect(THEME_PRESETS[0]?.id).toBe(DEFAULT_THEME_ID);
+  });
+
   it('keeps every terminal foreground at WCAG AA contrast against its background', () => {
     for (const preset of THEME_PRESETS) {
       expect(contrastRatio(preset.terminal.foreground, preset.terminal.background), preset.id).toBeGreaterThanOrEqual(4.5);

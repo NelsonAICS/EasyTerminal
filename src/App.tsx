@@ -14,7 +14,7 @@ import { UIIntentRenderer } from './components/UIIntentRenderer'
 import { UIButton, UIInput, UIModal } from './components/ui'
 import { searchManualCommandSuggestions } from './data/commandManual'
 import { TERMINAL_AGENT_COPY } from './lib/ui-copy'
-import { getThemePreset, THEME_PRESETS } from './lib/themes'
+import { DEFAULT_THEME_ID, getThemePreset, THEME_PRESETS } from './lib/themes'
 import { bindWebviewController, normalizeWebUrl, type WebLoadState } from './features/webview/webview-controller'
 import { type FileEntry, type FileTreeEntry, type FileTreeState, type ListDirectoryResult, type UIIntent } from './types/agent-extension'
 import { applyDirectoryResult, beginDirectoryLoad, createFileTreeState, setTreeRoot, toggleDirectory } from './lib/file-tree'
@@ -291,7 +291,7 @@ function App() {
   const terminalAgentCommandRunnerRef = useRef<((command: string) => Promise<void>) | null>(null)
   const autocompleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const [theme, setTheme] = useState('obsidian')
+  const [theme, setTheme] = useState(DEFAULT_THEME_ID)
   const [fontSize, setFontSize] = useState(14)
   const [showSettings, setShowSettings] = useState(false)
   const [autoCaptureTerminal, setAutoCaptureTerminal] = useState(false)
@@ -363,7 +363,7 @@ function App() {
     if (!ipcRenderer) return
 
     Promise.all([
-      ipcRenderer.invoke('store:get', 'ui_theme', 'obsidian'),
+      ipcRenderer.invoke('store:get', 'ui_theme', DEFAULT_THEME_ID),
       ipcRenderer.invoke('store:get', 'ui_font_size', 14),
     ]).then(([storedTheme, storedFontSize]: [string, number]) => {
       if (typeof storedTheme === 'string') setTheme(storedTheme)

@@ -78949,7 +78949,13 @@ ipcMain.handle("provider:test", async (_event, provider) => {
 	}
 });
 var __dirname = dirname(fileURLToPath(import.meta.url));
-var persistedTheme = store.get("ui_theme", "obsidian");
+var defaultThemeMigrationKey = "ui_theme_default_migrated_v1";
+var storedTheme = store.get("ui_theme", "liquid-glass");
+if (!store.get(defaultThemeMigrationKey, false)) {
+	if (storedTheme === "obsidian") store.set("ui_theme", "liquid-glass");
+	store.set(defaultThemeMigrationKey, true);
+}
+var persistedTheme = store.get("ui_theme", "liquid-glass");
 nativeTheme.themeSource = [
 	"porcelain",
 	"meadow",

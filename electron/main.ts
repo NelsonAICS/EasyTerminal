@@ -1109,7 +1109,16 @@ const __dirname = dirname(__filename)
 
 // Match the persisted renderer theme before the first native window is shown.
 // The renderer repeats this through theme:set when the preference is loaded.
-const persistedTheme = store.get('ui_theme', 'obsidian')
+const defaultThemeMigrationKey = 'ui_theme_default_migrated_v1'
+const storedTheme = store.get('ui_theme', 'liquid-glass')
+const defaultThemeMigrated = store.get(defaultThemeMigrationKey, false)
+if (!defaultThemeMigrated) {
+  // Obsidian was the old hard-coded default. Migrate that legacy default once,
+  // while preserving any theme the user chooses after this version.
+  if (storedTheme === 'obsidian') store.set('ui_theme', 'liquid-glass')
+  store.set(defaultThemeMigrationKey, true)
+}
+const persistedTheme = store.get('ui_theme', 'liquid-glass')
 nativeTheme.themeSource = ['porcelain', 'meadow', 'catppuccin-latte'].includes(String(persistedTheme)) ? 'light' : 'dark'
 
 let win: BrowserWindow | null = null
